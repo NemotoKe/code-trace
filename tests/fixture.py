@@ -68,9 +68,51 @@ FIXTURE_FILES = {
 }
 
 
+IMPORT_FIXTURE_FILES = {
+    "src/app/Use.java": (
+        "package app;\n"
+        "import p.internal.Internal;\n"
+        "import p.internal.Missing;\n"
+        "import java.util.List;\n"
+        "import org.slf4j.Logger;\n"
+        "import java.time.Instant;\n"
+        "import java.util.Map;\n"
+        "import org.slf4j.MDC;\n"
+        "import javax.annotation.Nullable;\n"
+        "import com.fasterxml.jackson.databind.ObjectMapper;\n"
+        "import static java.lang.Math.PI;\n"
+        "public class Use {}\n"
+    ),
+    "src/p/internal/Internal.java": "package p.internal;\npublic class Internal {}\n",
+    "src/p/internal/OnlyWildcard.java": "package p.internal;\npublic class OnlyWildcard {}\n",
+    "src/p/one/Duplicate.java": "package p.one;\npublic class Duplicate {}\n",
+    "src/p/two/Duplicate.java": "package p.two;\npublic class Duplicate {}\n",
+    "src/p/one/Unique.java": "package p.one;\npublic class Unique {}\n",
+    "src/app/WildcardUse.java": (
+        "package app;\n"
+        "import p.one.*;\n"
+        "public class WildcardUse {}\n"
+    ),
+}
+
+
 def write_fixture(root: str) -> Dict[str, bytes]:
     written = {}
     for rel_path, source in FIXTURE_FILES.items():
+        path = os.path.join(root, rel_path)
+        parent = os.path.dirname(path)
+        if not os.path.isdir(parent):
+            os.makedirs(parent)
+        raw = source.encode("utf-8")
+        with open(path, "wb") as stream:
+            stream.write(raw)
+        written[rel_path] = raw
+    return written
+
+
+def write_import_fixture(root: str) -> Dict[str, bytes]:
+    written = {}
+    for rel_path, source in IMPORT_FIXTURE_FILES.items():
         path = os.path.join(root, rel_path)
         parent = os.path.dirname(path)
         if not os.path.isdir(parent):

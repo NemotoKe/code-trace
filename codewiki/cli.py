@@ -7,6 +7,7 @@ import sys
 
 from .index import pipeline
 from .query.symbols import QueryError, search_path
+from .query.types import TypeQueryError, resolve_type_path
 
 
 def _nonnegative(value):
@@ -30,6 +31,11 @@ def _parser():
     symbol.add_argument("--json", action="store_true")
     symbol.add_argument("--limit", type=_nonnegative, default=None)
     symbol.add_argument("--kind", default=None)
+    resolve = commands.add_parser("resolve-type")
+    resolve.add_argument("name")
+    resolve.add_argument("--from", dest="from_path", required=True)
+    resolve.add_argument("--out", default=None)
+    resolve.add_argument("--json", action="store_true")
     return parser
 
 
@@ -65,7 +71,13 @@ def _index(args):
         count = result.skipped[reason]
         if count:
             print("skipped %s: %d" % (reason, count))
-    for stage in ("scan", "symbols", "persist", "total"):
+    print("imports found: %d" % result.imports_found)
+    for form in sorted(result.import_forms or {}):
+        print("imports form %s: %d" % (form, result.import_forms[form]))
+    for outcome in sorted(result.import_outcomes or {}):
+        print("imports outcome %s: %d" % (outcome, result.import_outcomes[outcome]))
+    print("internal resolution rate: %.1f%%" % (result.internal_resolution_rate * 100.0))
+    for stage in ("scan", "symbols", "imports", "persist", "total"):
         print("%s: %.3fs" % (stage, timings.get(stage, 0.0)))
     return 0
 
@@ -90,6 +102,26 @@ def _symbol(args):
     return 0
 
 
+def _resolve_type(args):
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    result = resolve_type_path(
+        os.path.join(out, "index.sqlite3"), args.name, args.from_path
+    )
+    if args.json:
+        print(json.dumps(result.as_dict(), ensure_ascii=False, separators=(",", ":")))
+        return 0
+    print("file: %s" % result.file)
+    print("name: %s" % result.name)
+    print("resolved FQN: %s" % (
+        result.resolved_fqn if result.resolved_fqn is not None else "absent"
+    ))
+    print("rule: %s" % (result.rule if result.rule is not None else "absent"))
+    print("outcome: %s" % result.outcome)
+    for candidate in result.candidates:
+        print("candidate: %s" % candidate)
+    return 0
+
+
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
@@ -98,8 +130,10 @@ def main(argv=None):
     try:
         if args.command == "index":
             return _index(args)
-        return _symbol(args)
-    except (OSError, QueryError, RuntimeError, ValueError) as exc:
+        if args.command == "symbol":
+            return _symbol(args)
+        return _resolve_type(args)
+    except (OSError, QueryError, TypeQueryError, RuntimeError, ValueError) as exc:
         message = str(exc)
         print("error: %s" % message, file=sys.stderr)
         if "rerun index" not in message.lower():

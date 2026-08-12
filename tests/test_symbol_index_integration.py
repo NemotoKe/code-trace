@@ -222,34 +222,35 @@ class SymbolIndexIntegrationTests(unittest.TestCase):
                 connection.close()
 
     def test_query_layer_boundary_is_structural_and_database_only(self):
-        path = os.path.join(ROOT, "codewiki", "query", "symbols.py")
-        with open(path, "r", encoding="utf-8") as stream:
-            tree = ast.parse(stream.read(), filename=path)
+        for filename in ("symbols.py", "types.py"):
+            path = os.path.join(ROOT, "codewiki", "query", filename)
+            with open(path, "r", encoding="utf-8") as stream:
+                tree = ast.parse(stream.read(), filename=path)
 
-        imported_modules = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported_modules.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                if node.level == 0:
-                    imported_modules.append(node.module or "")
-                else:
-                    package_parts = ["codewiki", "query"]
-                    base_length = len(package_parts) - (node.level - 1)
-                    imported_modules.append(".".join(
-                        package_parts[:base_length] + ([node.module] if node.module else [])
-                    ))
-        self.assertFalse(
-            any(module == "codewiki.index" or module.startswith("codewiki.index.")
-                for module in imported_modules),
-            imported_modules,
-        )
-        self.assertFalse(any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "open"
-            for node in ast.walk(tree)
-        ))
+            imported_modules = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported_modules.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    if node.level == 0:
+                        imported_modules.append(node.module or "")
+                    else:
+                        package_parts = ["codewiki", "query"]
+                        base_length = len(package_parts) - (node.level - 1)
+                        imported_modules.append(".".join(
+                            package_parts[:base_length] + ([node.module] if node.module else [])
+                        ))
+            self.assertFalse(
+                any(module == "codewiki.index" or module.startswith("codewiki.index.")
+                    for module in imported_modules),
+                imported_modules,
+            )
+            self.assertFalse(any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "open"
+                for node in ast.walk(tree)
+            ))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+from urllib.parse import quote
+
+from ..store import db
+
+
+class TypeQueryError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class TypeResolutionResult:
+    file: str
+    name: str
+    resolved_fqn: Optional[str]
+    rule: Optional[int]
+    outcome: str
+    candidates: List[str]
+
+    def as_dict(self) -> Dict:
+        return {
+            "file": self.file,
+            "name": self.name,
+            "resolved_fqn": self.resolved_fqn,
+            "rule": self.rule,
+            "outcome": self.outcome,
+            "candidates": list(self.candidates),
+        }
+
+
+def _readonly(path: str) -> sqlite3.Connection:
+    absolute = os.path.abspath(path)
+    uri = "file:%s?mode=ro" % quote(absolute, safe="/:")
+    try:
+        connection = sqlite3.connect(uri, uri=True)
+        connection.execute("PRAGMA foreign_keys = ON")
+        db.validate_schema(connection)
+        return connection
+    except (OSError, sqlite3.DatabaseError, RuntimeError) as exc:
+        raise TypeQueryError("index database missing or stale; rerun index") from exc
+
+
+def resolve_type_path(path: str, name: str, from_path: str) -> TypeResolutionResult:
+    """Resolve an indexed simple type name using persisted database rows only."""
+    connection = _readonly(path)
+    try:
+        file_row = connection.execute(
+            "SELECT file_id FROM files WHERE path = ?", (from_path,)
+        ).fetchone()
+        if file_row is None:
+            raise TypeQueryError("file is not present in index: %s" % from_path)
+        row = connection.execute(
+            "SELECT resolved_fqn, rule, outcome, candidates "
+            "FROM type_resolutions WHERE file_id = ? AND name = ?",
+            (file_row[0], name),
+        ).fetchone()
+        if row is None:
+            wildcard_rows = connection.execute(
+                "SELECT name, outcome FROM imports "
+                "WHERE file_id = ? AND form = 'wildcard' ORDER BY name",
+                (file_row[0],),
+            ).fetchall()
+            if wildcard_rows:
+                candidates = [package + "." + name for package, _outcome in wildcard_rows]
+                outcomes = {outcome for _package, outcome in wildcard_rows}
+                if "unresolved" in outcomes:
+                    return TypeResolutionResult(
+                        from_path, name, None, 4, "unresolved", sorted(candidates)
+                    )
+                if "excluded" in outcomes:
+                    return TypeResolutionResult(
+                        from_path, name, None, 4, "excluded", sorted(candidates)
+                    )
+                if outcomes == {"external"}:
+                    return TypeResolutionResult(
+                        from_path, name, None, None, "external", sorted(candidates)
+                    )
+            return TypeResolutionResult(from_path, name, None, None, "unresolved", [])
+        candidates = json.loads(row[3]) if row[3] else []
+        return TypeResolutionResult(
+            from_path, name, row[0], row[1], row[2], list(candidates)
+        )
+    except TypeQueryError:
+        raise
+    except (sqlite3.DatabaseError, ValueError, TypeError) as exc:
+        raise TypeQueryError("index database missing or stale; rerun index") from exc
+    finally:
+        connection.close()
+
+
+resolve_type = resolve_type_path

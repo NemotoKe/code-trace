@@ -9,7 +9,8 @@ from typing import Callable, Dict, Optional
 from .. import parallel
 from ..config import Config
 from ..store import db
-from . import scan, symbols
+from . import imports as java_imports
+from . import resolution, scan, symbols
 
 
 @dataclass
@@ -21,6 +22,10 @@ class PipelineResult:
     timings: Dict[str, float]
     skipped: Dict[str, int]
     parallel_jobs: int
+    imports_found: int = 0
+    import_forms: Dict[str, int] = None
+    import_outcomes: Dict[str, int] = None
+    internal_resolution_rate: float = 0.0
 
 
 def run(root: str, out_dir: str, config: Optional[Config] = None,
@@ -44,22 +49,60 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     emit("symbols", "extracting symbols")
     with parallel.Mapper(parallel.resolve_jobs(jobs), len(analyzable)) as mapper:
         extracted = symbols.extract_all(root, analyzable, scan.read_text, mapper)
+        packages = {}
+        for record in records:
+            if record.language != "java":
+                continue
+            try:
+                packages[record.path] = symbols.package_of(scan.read_text(root, record.path))
+            except OSError:
+                packages[record.path] = None
+        for record in records:
+            record.package = packages.get(record.path)
+        extracted = sorted(extracted, key=lambda item: (
+            item.path, item.line, item.name, item.kind, item.fqn, item.signature
+        ))
+
+        now = time.perf_counter()
+        timings["symbols"] = round(now - previous, 3)
+        previous = now
+
+        emit("imports", "parsing Java imports")
+        parsed_imports = java_imports.parse_all(
+            root, analyzable, scan.read_text, mapper
+        )
         parallel_jobs = mapper.jobs
-    packages = {}
-    for record in records:
-        if record.language != "java":
-            continue
-        try:
-            packages[record.path] = symbols.package_of(scan.read_text(root, record.path))
-        except OSError:
-            packages[record.path] = None
-    for record in records:
-        record.package = packages.get(record.path)
-    extracted = sorted(extracted, key=lambda item: (
-        item.path, item.line, item.name, item.kind, item.fqn, item.signature
-    ))
+
+    imports_by_file = dict(parsed_imports)
+    import_rows = []
+    type_infos = resolution.type_infos(extracted)
+    package_names = [record.package for record in records if record.package]
+    analyzable_package_names = [
+        record.package for record in analyzable if record.package
+    ]
+    lookup = resolution.build_lookup(
+        type_infos, package_names, analyzable_packages=analyzable_package_names
+    )
+    for record in analyzable:
+        for item in imports_by_file[record.path]:
+            import_rows.append((item, resolution.resolve_import(
+                item, type_infos, package_names, lookup=lookup
+            )))
+    resolution_rows = resolution.build_resolutions(
+        records, extracted, imports_by_file, lookup=lookup
+    )
+    import_forms = {form: 0 for form in java_imports.IMPORT_FORMS}
+    import_outcomes = {outcome: 0 for outcome in resolution.IMPORT_OUTCOMES}
+    for item, item_resolution in import_rows:
+        import_forms[item.form] = import_forms.get(item.form, 0) + 1
+        import_outcomes[item_resolution.outcome] = (
+            import_outcomes.get(item_resolution.outcome, 0) + 1
+        )
+    resolved = import_outcomes.get("resolved", 0)
+    unresolved = import_outcomes.get("unresolved", 0)
+    internal_rate = float(resolved) / (resolved + unresolved) if resolved + unresolved else 0.0
     now = time.perf_counter()
-    timings["symbols"] = round(now - previous, 3)
+    timings["imports"] = round(now - previous, 3)
     previous = now
 
     emit("persist", "writing sqlite")
@@ -67,6 +110,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     db.write_index(
         db_path, root, records, extracted,
         skipped=_skipped, parallel_jobs=parallel_jobs,
+        imports=import_rows, resolutions=resolution_rows,
     )
     now = time.perf_counter()
     timings["persist"] = round(now - previous, 3)
@@ -74,5 +118,6 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     emit("total", "index complete")
     return PipelineResult(
         db_path, len(records), len(analyzable), len(extracted), timings,
-        _skipped, parallel_jobs,
+        _skipped, parallel_jobs, len(import_rows), import_forms,
+        import_outcomes, internal_rate,
     )
