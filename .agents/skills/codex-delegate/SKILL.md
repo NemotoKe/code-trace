@@ -95,11 +95,12 @@ Include:
 Keep the task bounded. Do not delegate vague requests such as "implement this
 feature."
 
-Write every requirement as a concrete example with its expected output, not as
-a principle. Abstract constraints are the ones that get dropped. "Preserve the
-explanatory comments" was ignored; "this input must not produce this symbol"
-was not. Where a list is data rather than logic, paste the list into the prompt
-instead of describing it.
+**Read `references/writing-prompts.md` before writing the prompt.** It carries
+the rules that decide whether a delegation lands, each tied to something that
+measurably went wrong or right here — write requirements as inputs with expected
+outputs rather than as principles, paste data instead of describing it,
+constrain where an answer may live and not only what it must do, verify expected
+numbers before asserting them, and name the files that may and may not change.
 
 Never judge a background run by its exit code — a redirect makes a failed
 invocation exit 0. Read stderr, and read the final agent message.
