@@ -1,6 +1,6 @@
 ---
 name: codex-cli-delegation
-description: Delegate independently evaluable, bounded implementation tasks to Codex CLI using gpt-5.6-luna with xhigh reasoning, while the outer agent owns repository inspection, task decomposition, acceptance criteria, diff review, and independent verification. Use when the user explicitly asks to delegate implementation to Codex CLI.
+description: Delegate independently evaluable, bounded implementation tasks to Codex CLI using gpt-5.6-luna with max reasoning, while the outer agent owns repository inspection, task decomposition, acceptance criteria, diff review, and independent verification. Use when the user explicitly asks to delegate implementation to Codex CLI.
 ---
 
 # Codex CLI delegation
@@ -31,6 +31,26 @@ silently implement or repair Codex's changes yourself.
 
 4. Define explicit acceptance criteria before delegation.
 
+## How small
+
+Task size itself degrades output quality. This is a capability limit, not
+something a better-worded prompt recovers. Splitting further is the only
+reliable lever.
+
+Aim for **one function-level behavior per delegation, at most three acceptance
+criteria**. "One reviewable capability" is still too big — split a capability
+again into extract / resolve / persist / query.
+
+Never mix new schema design with new logic in the same delegation.
+
+The lower bound on splitting is **a size the human can review each time**. Do
+not batch units to save round trips or cost; round trips are cheap and a
+delegation that lands wrong costs far more.
+
+Observed on this repository: a delegation with 14 acceptance criteria silently
+dropped two instructions; narrowing to 6 still produced a defect affecting
+22,000 records; at 3 criteria the results have been clean.
+
 ## Build the delegated task
 
 Before writing or sending each implementation task, use the
@@ -53,7 +73,7 @@ cat <<'EOF' | codex exec \
   --sandbox workspace-write \
   --json \
   -m gpt-5.6-luna \
-  -c model_reasoning_effort=xhigh \
+  -c model_reasoning_effort=max \
   -
 <SELF-CONTAINED TASK>
 EOF
@@ -71,6 +91,15 @@ Include:
 Keep the task bounded. Do not delegate vague requests such as "implement this
 feature."
 
+Write every requirement as a concrete example with its expected output, not as
+a principle. Abstract constraints are the ones that get dropped. "Preserve the
+explanatory comments" was ignored; "this input must not produce this symbol"
+was not. Where a list is data rather than logic, paste the list into the prompt
+instead of describing it.
+
+Never judge a background run by its exit code — a redirect makes a failed
+invocation exit 0. Read stderr, and read the final agent message.
+
 Capture the session/thread ID from the JSON output for corrective passes.
 
 ## Per-unit execution loop
@@ -81,25 +110,38 @@ until the current unit passes all post-unit checks.
 For each implementation unit:
 
 1. Delegate the implementation prompt generated from
-   `break-down-task-creator` to `gpt-5.6-luna` with xhigh reasoning. When
+   `break-down-task-creator` to `gpt-5.6-luna` with max reasoning. When
    using the repository-local copy, read
    `skills/break-down-task-creator/SKILL.md` first.
-2. After the implementation worker finishes, start a separate Luna xhigh
-   invocation using the `integration-test-builder` skill (read
-   `skills/integration-test-builder/SKILL.md` when using the repository-local
-   copy). Give it only the current unit's requirements, acceptance criteria,
-   changed files, and relevant test results. Have it add or improve
+2. Verify the unit yourself before anything else runs. Execute each acceptance
+   criterion independently rather than reading the completion report — the
+   report is silent about instructions that were dropped. Add cases the prompt
+   did not name, to catch both over- and under-reach.
+3. Once the units that make up one user-visible capability are all in, start a
+   separate Luna max invocation using the `integration-test-builder` skill
+   (read `skills/integration-test-builder/SKILL.md` when using the
+   repository-local copy). Give it the capability's requirements, acceptance
+   criteria, changed files, and relevant test results. Have it add or improve
    independently executable integration tests and run them.
-3. After the integration-test-builder task finishes, start another separate
-   Luna xhigh invocation using the `integration-reviewer` skill (read
+4. After the integration-test-builder task finishes, start another separate
+   Luna max invocation using the `integration-reviewer` skill (read
    `skills/integration-reviewer/SKILL.md` when using the repository-local
-   copy). Ask it to inspect the current unit and return the skill's
+   copy). Ask it to inspect the capability and return the skill's
    evidence-based PASS or FAIL verdict. Use a fresh session so the review is
    not based on the implementer's conclusions.
-4. Mark the unit complete only when its acceptance criteria are satisfied, the
-   relevant tests pass, and the integration reviewer returns PASS.
-5. If implementation, integration testing, or review fails, send a bounded
+5. Mark the capability complete only when its acceptance criteria are
+   satisfied, the relevant tests pass, and the integration reviewer returns
+   PASS.
+6. If implementation, integration testing, or review fails, send a bounded
    corrective task to Luna, then repeat the post-unit checks before continuing.
+
+Steps 1 and 2 run per implementation unit. Steps 3 and 4 run **per capability**,
+not per unit: once units are small enough to review individually, running the
+integration skills against each one costs more round trips than it detects.
+
+Triage every reviewer finding against the original requirements before acting
+on one. Reviewers report defects that the prompt authorised, and they miss
+defects the prompt never mentioned.
 
 Keep implementation, integration-test-builder, and integration-reviewer work
 as separate Codex invocations. Apply this loop to each implementation unit;
@@ -107,13 +149,16 @@ do not recursively apply it to the test-builder or reviewer tasks themselves.
 
 ## Model and reasoning effort
 
-Use `gpt-5.6-luna` with `model_reasoning_effort=xhigh` for every delegated task,
+Use `gpt-5.6-luna` with `model_reasoning_effort=max` for every delegated task,
 including corrective passes and verification work performed by Codex.
 
 Do not silently switch to Terra, Sol, a lower reasoning effort, or Ultra. Ultra
 may introduce Codex-managed subagents, which duplicates the outer orchestrator
-role. If Luna or xhigh is unavailable, stop and report the blocker instead of
+role. If Luna or max is unavailable, stop and report the blocker instead of
 downgrading the task.
+
+Reasoning effort is not a substitute for splitting the task. Raising it does not
+rescue a delegation that is too large; see "How small" above.
 
 ## Review and verify
 
@@ -142,12 +187,19 @@ because Codex reports success.
 If the implementation is wrong or incomplete, send a precise correction to the
 same session instead of fixing it yourself:
 
+`codex exec resume` does **not** accept `--sandbox`. Copying that flag over from
+the `codex exec` block above makes the invocation exit immediately, and through
+a pipeline the exit code still reads 0 — the corrective pass looks sent and is
+not. Pass the sandbox as `-c sandbox_mode=workspace-write`, and confirm the run
+by reading stderr and the final agent message.
+
 ```bash
 cat <<'EOF' | codex exec resume \
   <SESSION_ID> \
   --json \
   -m gpt-5.6-luna \
-  -c model_reasoning_effort=xhigh \
+  -c model_reasoning_effort=max \
+  -c sandbox_mode=workspace-write \
   -
 Defect:
 <WHAT IS WRONG>
