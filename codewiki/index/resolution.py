@@ -7,6 +7,37 @@ from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 TYPE_KINDS = {"class", "interface", "enum", "record", "annotation"}
 IMPORT_OUTCOMES = ("resolved", "external", "unresolved", "excluded")
 TYPE_RESOLUTION_OUTCOMES = ("resolved", "external", "unresolved", "excluded")
+JAVA_LANG_TYPES = frozenset({
+    "AbstractMethodError", "Appendable", "ArithmeticException",
+    "ArrayIndexOutOfBoundsException", "ArrayStoreException", "AssertionError",
+    "AutoCloseable", "Boolean", "BootstrapMethodError", "Byte",
+    "CharSequence", "Character", "Class", "ClassCastException",
+    "ClassCircularityError", "ClassFormatError", "ClassLoader",
+    "ClassNotFoundException", "ClassValue", "CloneNotSupportedException",
+    "Cloneable", "Comparable", "Compiler", "Deprecated", "Double", "Enum",
+    "EnumConstantNotPresentException", "Error", "Exception",
+    "ExceptionInInitializerError", "Float", "FunctionalInterface",
+    "IllegalAccessError", "IllegalAccessException", "IllegalArgumentException",
+    "IllegalCallerException", "IllegalMonitorStateException",
+    "IllegalStateException", "IllegalThreadStateException",
+    "IncompatibleClassChangeError", "IndexOutOfBoundsException",
+    "InheritableThreadLocal", "InstantiationError", "InstantiationException",
+    "Integer", "InternalError", "InterruptedException", "Iterable",
+    "LayerInstantiationException", "LinkageError", "Long", "Math", "Module",
+    "ModuleLayer", "NegativeArraySizeException", "NoClassDefFoundError",
+    "NoSuchFieldError", "NoSuchFieldException", "NoSuchMethodError",
+    "NoSuchMethodException", "NullPointerException", "Number",
+    "NumberFormatException", "Object", "OutOfMemoryError", "Override", "Package",
+    "Process", "ProcessBuilder", "ProcessHandle", "Readable", "Record", "Runnable",
+    "Runtime", "RuntimeException", "RuntimePermission", "SafeVarargs", "ScopedValue",
+    "SecurityException", "SecurityManager", "Short", "StackOverflowError",
+    "StackTraceElement", "StackWalker", "StrictMath", "String", "StringBuffer",
+    "StringBuilder", "StringIndexOutOfBoundsException", "SuppressWarnings", "System",
+    "Thread", "ThreadDeath", "ThreadGroup", "ThreadLocal", "Throwable",
+    "TypeNotPresentException", "UnknownError", "UnsatisfiedLinkError",
+    "UnsupportedClassVersionError", "UnsupportedOperationException", "VerifyError",
+    "VirtualMachineError", "Void",
+})
 
 
 @dataclass(frozen=True)
@@ -252,6 +283,11 @@ def resolve_type(
 
     if wildcard_packages:
         possible = [package + "." + name for package in wildcard_packages]
+        if name in JAVA_LANG_TYPES:
+            return TypeResolution(
+                file_path, name, None, 7, "external",
+                ["java.lang." + name],
+            )
         matching_packages = [
             _longest_existing_package(candidate, lookup.packages)
             for candidate in possible
@@ -262,6 +298,10 @@ def resolve_type(
             return TypeResolution(file_path, name, None, 4, "excluded", _unique(possible))
         return TypeResolution(file_path, name, None, None, "external", _unique(possible))
 
+    if name in JAVA_LANG_TYPES:
+        return TypeResolution(
+            file_path, name, None, 7, "external", ["java.lang." + name]
+        )
     return _unresolved(file_path, name, None, [])
 
 
