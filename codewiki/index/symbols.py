@@ -291,6 +291,14 @@ def _absolute_offset(lines: List[str], lineno: int, offset: int,
     return line_starts[lineno - 1] + offset
 
 
+def _is_inside_ranges(position: int, ranges) -> bool:
+    """Return whether an absolute source position falls inside any range."""
+    for start, end in ranges:
+        if start <= position < end:
+            return True
+    return False
+
+
 _DELIMITER_PAIRS = {"(": ")", "[": "]", "{": "}", "<": ">"}
 
 
@@ -549,25 +557,21 @@ def _raw_signature(lines: List[str], start_index: int) -> str:
     return " ".join(part for part in parts if part)
 
 
-def extract(rel_path: str, language: str, text: str) -> List[Symbol]:
-    if language != "java":
-        return []
-    lines = text.splitlines()
-    clean_lines = []
-    in_block = False
-    for original in lines:
-        cleaned, in_block = strip_noise(original, in_block)
-        clean_lines.append(cleaned)
-    line_starts = _line_starts(clean_lines)
-    package = None
+def _find_package(clean_lines: List[str]) -> Optional[str]:
     for line in clean_lines:
-        match = re.match(r"^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;", line)
+        match = re.match(
+            r"^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;",
+            line,
+        )
         if match:
-            package = match.group(1)
-            break
+            return match.group(1)
+    return None
+
+
+def _find_types(lines: List[str], clean_lines: List[str], line_starts):
+    """Find Java type declarations and discard local classes."""
     types = []
-    symbols = []
-    for lineno, original in enumerate(lines, start=1):
+    for lineno, _original in enumerate(lines, start=1):
         line = clean_lines[lineno - 1]
         position = 0
         while position < len(line):
@@ -586,26 +590,27 @@ def extract(rel_path: str, language: str, text: str) -> List[Symbol]:
                 break
             if not found:
                 position += 1
+
     types.sort(key=lambda item: (item[2], item[4]))
     method_ranges = _method_body_ranges(clean_lines, {item[0] for item in types})
     non_member_ranges = _non_member_block_ranges(
         clean_lines, types, method_ranges, line_starts
     )
-    local_types = [
-        item for item in types
-        if any(
-            start <= _absolute_offset(
-                clean_lines, item[2], item[4], line_starts
-            ) < end
-            for start, end in method_ranges + non_member_ranges
-        )
-    ]
+    local_types = []
+    for item in types:
+        position = _absolute_offset(clean_lines, item[2], item[4], line_starts)
+        if _is_inside_ranges(position, method_ranges + non_member_ranges):
+            local_types.append(item)
+
     local_body_ranges = _type_body_ranges(clean_lines, local_types, line_starts)
-    types = [
-        item for item in types
-        if item not in local_types
-    ]
+    member_types = [item for item in types if item not in local_types]
+    return member_types, local_body_ranges
+
+
+def _qualify_types(rel_path: str, types, package: Optional[str], lines: List[str]):
+    """Attach parent ownership and fully-qualified names to type declarations."""
     qualified_types = []
+    symbols = []
     for name, kind, lineno, end_line, start_offset, end_offset in types:
         parents = _containing_types(qualified_types, lineno, start_offset)
         parent = max(parents, key=lambda item: (item[2], item[6])) if parents else None
@@ -613,30 +618,43 @@ def extract(rel_path: str, language: str, text: str) -> List[Symbol]:
         fqn = "%s.%s" % (prefix, name) if prefix else name
         qualified_types.append((name, kind, lineno, end_line, fqn,
                                 parent[4] if parent else None, start_offset, end_offset))
+
     for name, kind, lineno, end_line, fqn, owner_fqn, _start_offset, _end_offset in qualified_types:
-        symbols.append(Symbol(rel_path, name, kind, fqn, owner_fqn, package, None, None,
-                              lines[lineno - 1].strip()[:MAX_SIGNATURE], lineno,
-                              end_line, "CONFIRMED" if end_line is not None else "UNRESOLVED"))
-    for lineno, original in enumerate(lines, start=1):
+        symbols.append(Symbol(
+            rel_path, name, kind, fqn, owner_fqn, package, None, None,
+            lines[lineno - 1].strip()[:MAX_SIGNATURE], lineno, end_line,
+            "CONFIRMED" if end_line is not None else "UNRESOLVED",
+        ))
+    return qualified_types, symbols
+
+
+def _method_symbol(rel_path, name, owner, package, params, count,
+                   signature, line, end_line, confidence, kind=None):
+    owner_fqn = owner[4]
+    symbol_kind = kind or ("constructor" if name == owner[0] else "method")
+    return Symbol(rel_path, name, symbol_kind, owner_fqn + "." + name,
+                  owner_fqn, package, params, count, signature, line,
+                  end_line, confidence)
+
+
+def _extract_line_methods(rel_path, lines, clean_lines, line_starts,
+                          local_body_ranges, qualified_types, package):
+    symbols = []
+    for lineno, _original in enumerate(lines, start=1):
         line = clean_lines[lineno - 1]
         if not line.strip() or "(" not in line:
             continue
-        if any(
-            start <= _absolute_offset(clean_lines, lineno, 0, line_starts) < end
-            for start, end in local_body_ranges
-        ):
+        line_position = _absolute_offset(clean_lines, lineno, 0, line_starts)
+        if _is_inside_ranges(line_position, local_body_ranges):
             continue
         if re.match(
                 r"^\s*(?:return|throw|new|assert|yield|else|case|break|continue|"
                 r"if|while|for|switch|do|try|catch|import|package)\b", line):
             continue
         containing = _containing_types(qualified_types, lineno, 0)
-        if containing:
-            owner = sorted(containing, key=lambda item: (item[2], item[6]))[-1]
-        else:
-            owner = None
-        if owner is None:
+        if not containing:
             continue
+        owner = sorted(containing, key=lambda item: (item[2], item[6]))[-1]
         match = _jvm_match(line)
         name = match.group("name") if match else None
         if name is None:
@@ -652,23 +670,24 @@ def extract(rel_path: str, language: str, text: str) -> List[Symbol]:
             continue
         declaration = _raw_signature(clean_lines, lineno - 1)
         params, count, confidence = _params(declaration)
-        signature = declaration[:MAX_SIGNATURE]
-        owner_fqn = owner[4]
-        kind = "constructor" if name == owner[0] else "method"
-        fqn = owner_fqn + "." + name
-        symbols.append(Symbol(rel_path, name, kind, fqn, owner_fqn, package, params, count,
-                              signature, lineno,
-                              _brace_body_end(clean_lines, lineno - 1), confidence))
+        symbols.append(_method_symbol(
+            rel_path, name, owner, package, params, count,
+            declaration[:MAX_SIGNATURE], lineno,
+            _brace_body_end(clean_lines, lineno - 1), confidence,
+        ))
+    return symbols
 
-    # A legal Java declaration may follow a type/body separator on the same
-    # physical line: `class A { void m() {} }`.  The line-anchored JVM regex
-    # above intentionally avoids calls; this pass keeps that property by only
-    # trying declaration candidates after `{`, `}`, `;`, or at line start.
+
+def _extract_same_line_methods(rel_path, lines, clean_lines, line_starts,
+                               local_body_ranges, qualified_types, package,
+                               existing_symbols):
+    """Find declarations after separators on lines containing multiple bodies."""
+    symbols = []
     existing = {(symbol.name, symbol.kind, symbol.line, symbol.owner_fqn)
-                for symbol in symbols}
+                for symbol in existing_symbols}
     excluded = {"if", "for", "while", "switch", "catch", "return", "new",
                 "throw", "assert", "yield", "else", "case", "break", "continue"}
-    for lineno, original in enumerate(lines, start=1):
+    for lineno, _original in enumerate(lines, start=1):
         line = clean_lines[lineno - 1]
         starts = [0] + [index + 1 for index, char in enumerate(line)
                         if char in "{};"]
@@ -680,7 +699,7 @@ def extract(rel_path: str, language: str, text: str) -> List[Symbol]:
             absolute_start = _absolute_offset(
                 clean_lines, lineno, actual_start, line_starts
             )
-            if any(start <= absolute_start < end for start, end in local_body_ranges):
+            if _is_inside_ranges(absolute_start, local_body_ranges):
                 continue
             first_word = re.match(r"[A-Za-z_$][\w$]*", candidate)
             if first_word is not None and first_word.group(0) in excluded:
@@ -702,22 +721,51 @@ def extract(rel_path: str, language: str, text: str) -> List[Symbol]:
                 name = owner[0]
             if name in excluded:
                 continue
-            owner_fqn = owner[4]
             kind = "constructor" if name == owner[0] else "method"
-            key = (name, kind, lineno, owner_fqn)
+            key = (name, kind, lineno, owner[4])
             if key in existing:
                 continue
             declaration = _same_line_signature(line, actual_start, name)
             params, count, confidence = _params(declaration)
-            signature = declaration[:MAX_SIGNATURE]
             end_line, _end_offset = _brace_body_span(
                 clean_lines, lineno - 1, actual_start
             )
-            symbols.append(Symbol(
-                rel_path, name, kind, owner_fqn + "." + name, owner_fqn, package,
-                params, count, signature, lineno, end_line, confidence,
-            ))
+            symbol = _method_symbol(
+                rel_path, name, owner, package, params, count,
+                declaration[:MAX_SIGNATURE], lineno, end_line, confidence,
+                kind,
+            )
+            symbols.append(symbol)
             existing.add(key)
+    return symbols
+
+
+def extract(rel_path: str, language: str, text: str) -> List[Symbol]:
+    if language != "java":
+        return []
+    lines = text.splitlines()
+    clean_lines = []
+    in_block = False
+    for original in lines:
+        cleaned, in_block = strip_noise(original, in_block)
+        clean_lines.append(cleaned)
+    line_starts = _line_starts(clean_lines)
+    package = _find_package(clean_lines)
+    types, local_body_ranges = _find_types(
+        lines, clean_lines, line_starts
+    )
+    qualified_types, type_symbols = _qualify_types(
+        rel_path, types, package, lines
+    )
+    line_method_symbols = _extract_line_methods(
+        rel_path, lines, clean_lines, line_starts, local_body_ranges,
+        qualified_types, package,
+    )
+    same_line_method_symbols = _extract_same_line_methods(
+        rel_path, lines, clean_lines, line_starts, local_body_ranges,
+        qualified_types, package, type_symbols + line_method_symbols,
+    )
+    symbols = type_symbols + line_method_symbols + same_line_method_symbols
     symbols.sort(key=lambda item: (item.line, item.name, item.kind))
     return symbols
 
@@ -735,20 +783,3 @@ def package_of(text: str) -> Optional[str]:
         if match:
             return match.group(1)
     return None
-
-
-def _job(item):
-    root, rel_path, language, reader = item
-    try:
-        return extract(rel_path, language, reader(root, rel_path))
-    except OSError:
-        return []
-
-
-def extract_all(root: str, files: List, reader, mapper=None) -> List[Symbol]:
-    items = [(root, record.path, record.language, reader) for record in files]
-    batches = mapper.map(_job, items) if mapper is not None else [_job(item) for item in items]
-    result = []
-    for batch in batches:
-        result.extend(batch)
-    return sorted(result, key=lambda item: (item.path, item.line, item.name, item.kind))
