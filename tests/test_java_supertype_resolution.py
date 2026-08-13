@@ -49,6 +49,14 @@ class JavaSupertypeResolutionTests(unittest.TestCase):
             self.PATH, 1, 1, "import %s;" % fqn, fqn, "single", False, False
         )
 
+    def _wildcard_import(self, package):
+        from codewiki.index.imports import ImportRecord
+
+        return ImportRecord(
+            self.PATH, 1, 1, "import %s.*;" % package, package,
+            "wildcard", False, True,
+        )
+
     def test_already_qualified_fqn_resolves_with_rule_5(self):
         result = self._resolve(
             "com.acme.db.OrderDao",
@@ -77,6 +85,21 @@ class JavaSupertypeResolutionTests(unittest.TestCase):
         self.assertEqual(6, result.rule)
         self.assertEqual("com.acme.Outer.MyContext", result.resolved_fqn)
         self.assertEqual(["com.acme.Outer.MyContext"], result.candidates)
+
+    def test_rule_6_does_not_resolve_top_level_type_from_package_collision(self):
+        result = self._resolve(
+            "Outer.Inner",
+            [
+                self._type("p.Outer", "p", name="Outer"),
+                self._type("p.Outer.Inner", "p.Outer", name="Inner"),
+            ],
+            imports=[self._single_import("p.Outer")],
+        )
+
+        self.assertEqual("unresolved", result.outcome)
+        self.assertEqual(6, result.rule)
+        self.assertIsNone(result.resolved_fqn)
+        self.assertEqual(["p.Outer.Inner"], result.candidates)
 
     def test_missing_nested_type_reports_constructed_candidate(self):
         result = self._resolve(
@@ -151,5 +174,68 @@ class JavaSupertypeResolutionTests(unittest.TestCase):
         result = self._resolve("Outer.Inner")
 
         self.assertEqual("external", result.outcome)
+        self.assertIsNone(result.rule)
         self.assertIsNone(result.resolved_fqn)
         self.assertEqual(["Outer.Inner"], result.candidates)
+
+    def test_ambiguous_outer_reports_qualified_candidates_as_unresolved(self):
+        result = self._resolve(
+            "Outer.Inner",
+            [
+                self._type("a.Outer", "a", name="Outer"),
+                self._type(
+                    "a.Outer.Inner", "a", name="Inner", owner_fqn="a.Outer",
+                ),
+                self._type("b.Outer", "b", name="Outer"),
+                self._type(
+                    "b.Outer.Inner", "b", name="Inner", owner_fqn="b.Outer",
+                ),
+            ],
+            imports=[self._wildcard_import("a"), self._wildcard_import("b")],
+        )
+
+        self.assertEqual("unresolved", result.outcome)
+        self.assertEqual(6, result.rule)
+        self.assertIsNone(result.resolved_fqn)
+        self.assertEqual(
+            ["a.Outer.Inner", "b.Outer.Inner"], result.candidates
+        )
+
+    def test_ambiguous_external_outer_reports_qualified_candidates_as_external(self):
+        result = self._resolve(
+            "Outer.Inner",
+            imports=[
+                self._wildcard_import("third.party.alpha"),
+                self._wildcard_import("third.party.beta"),
+            ],
+        )
+
+        self.assertEqual("external", result.outcome)
+        self.assertEqual(6, result.rule)
+        self.assertIsNone(result.resolved_fqn)
+        self.assertEqual(
+            [
+                "third.party.alpha.Outer.Inner",
+                "third.party.beta.Outer.Inner",
+            ],
+            result.candidates,
+        )
+
+    def test_ambiguous_excluded_outer_reports_qualified_candidates_as_excluded(self):
+        result = self._resolve(
+            "Outer.Inner",
+            imports=[
+                self._wildcard_import("vendor.alpha"),
+                self._wildcard_import("vendor.beta"),
+            ],
+            packages=["vendor.alpha", "vendor.beta"],
+            analyzable_packages=["app"],
+        )
+
+        self.assertEqual("excluded", result.outcome)
+        self.assertEqual(6, result.rule)
+        self.assertIsNone(result.resolved_fqn)
+        self.assertEqual(
+            ["vendor.alpha.Outer.Inner", "vendor.beta.Outer.Inner"],
+            result.candidates,
+        )

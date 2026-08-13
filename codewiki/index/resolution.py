@@ -83,6 +83,7 @@ class ResolutionIndex:
 
     types: Tuple[TypeInfo, ...]
     internal: FrozenSet[str]
+    owners_by_fqn: Dict[str, FrozenSet[Optional[str]]]
     same_file: Dict[Tuple[str, str], Tuple[str, ...]]
     same_package: Dict[Tuple[Optional[str], str], Tuple[str, ...]]
     wildcard_types: Dict[Tuple[Optional[str], str], Tuple[str, ...]]
@@ -130,12 +131,14 @@ def build_lookup(types: Sequence[TypeInfo], packages: Iterable = (),
     names_by_package = {}
     wildcard_names_by_package = {}
     packages_with_types = set()
+    owners_by_fqn = {}
 
     for item in ordered_types:
         same_file.setdefault((item.path, item.name), []).append(item.fqn)
         names_by_path.setdefault(item.path, set()).add(item.name)
         names_by_package.setdefault(item.package, set()).add(item.name)
         packages_with_types.add(item.package)
+        owners_by_fqn.setdefault(item.fqn, set()).add(item.owner_fqn)
         if item.owner_fqn is None:
             same_package.setdefault((item.package, item.name), []).append(item.fqn)
             wildcard_types.setdefault((item.package, item.name), []).append(item.fqn)
@@ -147,6 +150,9 @@ def build_lookup(types: Sequence[TypeInfo], packages: Iterable = (),
     return ResolutionIndex(
         types=ordered_types,
         internal=frozenset(item.fqn for item in ordered_types),
+        owners_by_fqn={
+            key: frozenset(value) for key, value in owners_by_fqn.items()
+        },
         same_file=sorted_values(same_file),
         same_package=sorted_values(same_package),
         wildcard_types=sorted_values(wildcard_types),
@@ -218,7 +224,7 @@ def _classify_candidates(file_path: str, name: str, candidates,
         return TypeResolution(file_path, name, None, rule, "unresolved", candidates)
     if any(package is not None for package in matching_packages):
         return TypeResolution(file_path, name, None, rule, "excluded", candidates)
-    return TypeResolution(file_path, name, None, None, "external", candidates)
+    return TypeResolution(file_path, name, None, rule, "external", candidates)
 
 
 def resolve_type(
@@ -331,11 +337,15 @@ def resolve_supertype(
     )
     if outer.outcome == "resolved" and outer.resolved_fqn:
         candidate = outer.resolved_fqn + "." + rest
-        if candidate in lookup.internal:
+        if (candidate in lookup.internal and
+                outer.resolved_fqn in lookup.owners_by_fqn.get(candidate, ())):
             return TypeResolution(
                 ref.path, ref.name, candidate, 6, "resolved", [candidate]
             )
         return _classify_candidates(ref.path, ref.name, [candidate], lookup, 6)
+    if outer.candidates:
+        candidates = [candidate + "." + rest for candidate in outer.candidates]
+        return _classify_candidates(ref.path, ref.name, candidates, lookup, 6)
     return _classify_candidates(ref.path, ref.name, [ref.name], lookup)
 
 
