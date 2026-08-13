@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 from urllib.parse import quote
 
+from ..javalang import JAVA_LANG_TYPES
 from ..store import db
 
 
@@ -81,6 +82,11 @@ def resolve_type_path(path: str, name: str, from_path: str) -> TypeResolutionRes
             (file_row[0], name),
         ).fetchone()
         if row is None:
+            if name in JAVA_LANG_TYPES:
+                return TypeResolutionResult(
+                    from_path, name, None, 7, "external",
+                    ["java.lang." + name],
+                )
             wildcard_rows = connection.execute(
                 "SELECT name, outcome FROM imports "
                 "WHERE file_id = ? AND form = 'wildcard' ORDER BY name",

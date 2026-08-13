@@ -114,6 +114,69 @@ class ResolveTypeCliTests(unittest.TestCase):
             self.assertEqual(0, no_match.returncode, no_match.stderr)
             self.assertEqual([], json.loads(no_match.stdout)["candidates"])
 
+    def test_cli_resolves_missing_java_lang_name_without_a_persisted_row(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-cli-java-lang-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-cli-java-lang-out-") as out:
+            write_file(root, "src/app/Use.java", "package app;\npublic class Use {}\n")
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            human = run_cli(
+                "resolve-type", "String", "--from", "src/app/Use.java", "--out", out
+            )
+            self.assertEqual(0, human.returncode, human.stderr)
+            self.assertIn("resolved FQN: absent", human.stdout)
+            self.assertIn("rule: 7", human.stdout)
+            self.assertIn("outcome: external", human.stdout)
+            self.assertIn("candidate: java.lang.String", human.stdout)
+
+            encoded = run_cli(
+                "resolve-type", "String", "--from", "src/app/Use.java",
+                "--out", out, "--json",
+            )
+            self.assertEqual(0, encoded.returncode, encoded.stderr)
+            payload = json.loads(encoded.stdout)
+            self.assertEqual(
+                {
+                    "file", "name", "resolved_fqn", "rule", "outcome", "candidates"
+                },
+                set(payload),
+            )
+            self.assertEqual("src/app/Use.java", payload["file"])
+            self.assertEqual("String", payload["name"])
+            self.assertIsNone(payload["resolved_fqn"])
+            self.assertEqual(7, payload["rule"])
+            self.assertEqual("external", payload["outcome"])
+            self.assertEqual(["java.lang.String"], payload["candidates"])
+
+    def test_cli_repository_type_shadows_java_lang_fallback(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-cli-shadow-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-cli-shadow-out-") as out:
+            write_file(root, "src/app/String.java", "package app;\npublic class String {}\n")
+            write_file(root, "src/app/Use.java", "package app;\npublic class Use {}\n")
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            human = run_cli(
+                "resolve-type", "String", "--from", "src/app/Use.java", "--out", out
+            )
+            self.assertEqual(0, human.returncode, human.stderr)
+            self.assertIn("resolved FQN: app.String", human.stdout)
+            self.assertIn("rule: 3", human.stdout)
+            self.assertIn("outcome: resolved", human.stdout)
+            self.assertIn("candidate: app.String", human.stdout)
+
+            encoded = run_cli(
+                "resolve-type", "String", "--from", "src/app/Use.java",
+                "--out", out, "--json",
+            )
+            self.assertEqual(0, encoded.returncode, encoded.stderr)
+            payload = json.loads(encoded.stdout)
+            self.assertEqual("app.String", payload["resolved_fqn"])
+            self.assertEqual(3, payload["rule"])
+            self.assertEqual("resolved", payload["outcome"])
+            self.assertEqual(["app.String"], payload["candidates"])
+
     def test_cli_reports_all_four_import_outcomes(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-cli-imports-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-cli-imports-out-") as out:
