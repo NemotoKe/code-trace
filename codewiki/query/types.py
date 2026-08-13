@@ -15,6 +15,26 @@ class TypeQueryError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class SubtypeResult:
+    fqn: str
+    kind: str
+    path: str
+    line: int
+    distance: int
+    relation: str
+
+    def as_dict(self) -> Dict:
+        return {
+            "fqn": self.fqn,
+            "kind": self.kind,
+            "path": self.path,
+            "line": self.line,
+            "distance": self.distance,
+            "relation": self.relation,
+        }
+
+
+@dataclass(frozen=True)
 class TypeResolutionResult:
     file: str
     name: str
@@ -95,3 +115,50 @@ def resolve_type_path(path: str, name: str, from_path: str) -> TypeResolutionRes
 
 
 resolve_type = resolve_type_path
+
+
+def subtypes(path: str, fqn: str) -> List[SubtypeResult]:
+    """Return all indexed subtypes of an indexed type."""
+    connection = _readonly(path)
+    try:
+        frontier = [fqn]
+        visited = {fqn}
+        distance = 0
+        results = []
+        while frontier:
+            candidates = {}
+            for current in frontier:
+                rows = connection.execute(
+                    "SELECT s.fqn, s.kind, f.path, s.line, st.relation "
+                    "FROM supertypes AS st "
+                    "JOIN symbols AS s ON s.fqn = st.owner_fqn "
+                    "JOIN files AS f ON f.file_id = s.file_id "
+                    "WHERE st.target_fqn = ? AND st.outcome = 'resolved' "
+                    "AND s.kind IN ('class', 'interface', 'enum', 'record') "
+                    "ORDER BY st.relation, st.owner_fqn, f.path, s.line, s.symbol_id",
+                    (current,),
+                ).fetchall()
+                for row in rows:
+                    owner_fqn = row[0]
+                    if owner_fqn in visited:
+                        continue
+                    subtype = SubtypeResult(
+                        owner_fqn, row[1], row[2], row[3], distance + 1, row[4]
+                    )
+                    edge_key = (subtype.relation, subtype.fqn)
+                    previous = candidates.get(owner_fqn)
+                    if previous is None or edge_key < previous[0]:
+                        candidates[owner_fqn] = (edge_key, subtype)
+
+            frontier = []
+            for owner_fqn in sorted(candidates):
+                visited.add(owner_fqn)
+                subtype = candidates[owner_fqn][1]
+                results.append(subtype)
+                frontier.append(owner_fqn)
+            distance += 1
+        return sorted(results, key=lambda item: (item.distance, item.fqn))
+    except sqlite3.DatabaseError as exc:
+        raise TypeQueryError("index database missing or stale; rerun index") from exc
+    finally:
+        connection.close()
