@@ -20,6 +20,8 @@ _INDEX_DEFINITIONS = (
     ("idx_imports_form", "imports(form)"),
     ("idx_imports_outcome", "imports(outcome)"),
     ("idx_type_resolutions_file_name", "type_resolutions(file_id, name)"),
+    ("idx_supertypes_owner", "supertypes(owner_fqn)"),
+    ("idx_supertypes_target", "supertypes(target_fqn)"),
 )
 
 
@@ -57,7 +59,7 @@ def open_index(path: str) -> sqlite3.Connection:
 def write_index(db_path: str, repo_root: str, files: List, symbols: List,
                 generated_at: Optional[str] = None, skipped=None,
                 parallel_jobs: Optional[int] = None, imports=None,
-                resolutions=None) -> None:
+                resolutions=None, supertypes=None) -> None:
     """Write a complete fresh index with IDs assigned from sorted input rows."""
     parent = os.path.dirname(os.path.abspath(db_path))
     if not os.path.isdir(parent):
@@ -98,6 +100,7 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
             )
         imports = list(imports or [])
         resolutions = list(resolutions or [])
+        supertypes = list(supertypes or [])
         import_forms = {form: 0 for form in _IMPORT_FORMS}
         import_outcomes = {outcome: 0 for outcome in _IMPORT_OUTCOMES}
         for record, resolution in imports:
@@ -230,6 +233,36 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
             (
                 resolution_row(resolution)
                 for resolution in sorted(resolutions, key=lambda item: (item.file, item.name))
+            )
+        )
+
+        def supertype_row(item):
+            ref, resolution = item
+            target_fqn = (
+                resolution.resolved_fqn
+                if resolution.outcome == "resolved" else None
+            )
+            return (
+                file_ids[ref.path], ref.owner_fqn, ref.line, ref.relation,
+                ref.raw, ref.name, target_fqn, resolution.rule,
+                resolution.outcome,
+                json.dumps(sorted(resolution.candidates), ensure_ascii=False,
+                           separators=(",", ":")),
+            )
+
+        connection.executemany(
+            "INSERT INTO supertypes(file_id, owner_fqn, line, relation, raw, name, "
+            "target_fqn, rule, outcome, candidates) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                supertype_row(item)
+                for item in sorted(
+                    supertypes,
+                    key=lambda item: (
+                        item[0].path, item[0].line, item[0].owner_fqn,
+                        item[0].relation, item[0].raw, item[0].name,
+                    )
+                )
             )
         )
         for index_name, definition in _INDEX_DEFINITIONS:

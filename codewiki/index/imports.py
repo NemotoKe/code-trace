@@ -124,23 +124,4 @@ def parse_imports(path: str, text: str) -> List[ImportRecord]:
     return records
 
 
-def _job(item):
-    root, rel_path, reader = item
-    try:
-        return parse_imports(rel_path, reader(root, rel_path))
-    except OSError:
-        return []
-
-
-def parse_all(root: str, files, reader, mapper=None):
-    """Parse imports in file order, optionally using a shared Mapper."""
-    files = list(files)
-    items = [(root, record.path, reader) for record in files]
-    if mapper is not None:
-        batches = mapper.map(_job, items)
-    else:
-        batches = [_job(item) for item in items]
-    return [(record.path, parsed) for record, parsed in zip(files, batches)]
-
-
 parse = parse_imports

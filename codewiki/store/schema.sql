@@ -58,6 +58,21 @@ CREATE TABLE IF NOT EXISTS type_resolutions (
     UNIQUE(file_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS supertypes (
+    supertype_id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    owner_fqn TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    relation TEXT NOT NULL CHECK(relation IN ('extends', 'implements')),
+    raw TEXT NOT NULL,
+    name TEXT NOT NULL,
+    target_fqn TEXT,
+    rule INTEGER,
+    outcome TEXT NOT NULL CHECK(outcome IN ('resolved', 'external', 'unresolved', 'excluded')),
+    candidates TEXT NOT NULL,
+    UNIQUE(file_id, line, owner_fqn, relation, raw)
+);
+
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_fqn ON symbols(fqn);
 CREATE INDEX IF NOT EXISTS idx_symbols_owner_fqn ON symbols(owner_fqn);
@@ -65,3 +80,5 @@ CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
 CREATE INDEX IF NOT EXISTS idx_imports_form ON imports(form);
 CREATE INDEX IF NOT EXISTS idx_imports_outcome ON imports(outcome);
 CREATE INDEX IF NOT EXISTS idx_type_resolutions_file_name ON type_resolutions(file_id, name);
+CREATE INDEX IF NOT EXISTS idx_supertypes_owner ON supertypes(owner_fqn);
+CREATE INDEX IF NOT EXISTS idx_supertypes_target ON supertypes(target_fqn);

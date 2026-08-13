@@ -77,7 +77,16 @@ def _index(args):
     for outcome in sorted(result.import_outcomes or {}):
         print("imports outcome %s: %d" % (outcome, result.import_outcomes[outcome]))
     print("internal resolution rate: %.1f%%" % (result.internal_resolution_rate * 100.0))
-    for stage in ("scan", "symbols", "imports", "persist", "total"):
+    print("supertypes found: %d" % result.supertypes_found)
+    for outcome in ("resolved", "external", "unresolved", "excluded"):
+        print(
+            "supertypes outcome %s: %d"
+            % (outcome, (result.supertype_outcomes or {}).get(outcome, 0))
+        )
+    print("supertype resolution rate: %.1f%%" % (
+        result.supertype_resolution_rate * 100.0
+    ))
+    for stage in ("scan", "symbols", "imports", "supertypes", "persist", "total"):
         print("%s: %.3fs" % (stage, timings.get(stage, 0.0)))
     return 0
 

@@ -10,7 +10,22 @@ from .. import parallel
 from ..config import Config
 from ..store import db
 from . import imports as java_imports
-from . import resolution, scan, symbols
+from . import resolution, scan, supertypes, symbols
+
+
+def _analyze_java_file(item):
+    root, path, language, is_generated = item
+    try:
+        text = scan.read_text(root, path)
+    except OSError:
+        return path, None, [], [], []
+    package = symbols.package_of(text)
+    if is_generated:
+        return path, package, [], [], []
+    file_symbols = symbols.extract(path, language, text)
+    file_imports = java_imports.parse_imports(path, text)
+    file_supertypes = supertypes.extract(path, language, text, file_symbols)
+    return path, package, file_symbols, file_imports, file_supertypes
 
 
 @dataclass
@@ -26,6 +41,9 @@ class PipelineResult:
     import_forms: Dict[str, int] = None
     import_outcomes: Dict[str, int] = None
     internal_resolution_rate: float = 0.0
+    supertypes_found: int = 0
+    supertype_outcomes: Dict[str, int] = None
+    supertype_resolution_rate: float = 0.0
 
 
 def run(root: str, out_dir: str, config: Optional[Config] = None,
@@ -47,31 +65,43 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     previous = now
 
     emit("symbols", "extracting symbols")
-    with parallel.Mapper(parallel.resolve_jobs(jobs), len(analyzable)) as mapper:
-        extracted = symbols.extract_all(root, analyzable, scan.read_text, mapper)
+    java_records = [record for record in records if record.language == "java"]
+    analysis_items = [
+        (root, record.path, record.language, record.is_generated)
+        for record in java_records
+    ]
+    analyzable_paths = {record.path for record in analyzable}
+    with parallel.Mapper(parallel.resolve_jobs(jobs), len(java_records)) as mapper:
+        analyses = mapper.map(_analyze_java_file, analysis_items)
+        extracted = []
+        parsed_imports = []
+        supertype_refs = {}
         packages = {}
-        for record in records:
-            if record.language != "java":
-                continue
-            try:
-                packages[record.path] = symbols.package_of(scan.read_text(root, record.path))
-            except OSError:
-                packages[record.path] = None
-        for record in records:
-            record.package = packages.get(record.path)
-        extracted = sorted(extracted, key=lambda item: (
-            item.path, item.line, item.name, item.kind, item.fqn, item.signature
-        ))
-
-        now = time.perf_counter()
-        timings["symbols"] = round(now - previous, 3)
-        previous = now
-
-        emit("imports", "parsing Java imports")
-        parsed_imports = java_imports.parse_all(
-            root, analyzable, scan.read_text, mapper
-        )
+        for path, package, file_symbols, file_imports, file_refs in analyses:
+            packages[path] = package
+            if file_symbols:
+                extracted.extend(file_symbols)
+            if path in analyzable_paths:
+                parsed_imports.append((path, file_imports))
+            supertype_refs[path] = file_refs
         parallel_jobs = mapper.jobs
+        del analyses
+        del analysis_items
+        del java_records
+        del analyzable_paths
+
+    for record in records:
+        if record.language == "java":
+            record.package = packages.get(record.path)
+    extracted = sorted(extracted, key=lambda item: (
+        item.path, item.line, item.name, item.kind, item.fqn, item.signature
+    ))
+
+    now = time.perf_counter()
+    timings["symbols"] = round(now - previous, 3)
+    previous = now
+
+    emit("imports", "parsing Java imports")
 
     imports_by_file = dict(parsed_imports)
     import_rows = []
@@ -105,12 +135,39 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     timings["imports"] = round(now - previous, 3)
     previous = now
 
+    emit("supertypes", "resolving Java supertypes")
+    supertype_rows = []
+    file_packages = {record.path: record.package for record in records}
+    for record in analyzable:
+        for ref in supertype_refs.get(record.path, []):
+            supertype_rows.append((ref, resolution.resolve_supertype(
+                ref, file_packages, type_infos, imports_by_file, lookup=lookup
+            )))
+    supertype_outcomes = {
+        outcome: 0 for outcome in resolution.TYPE_RESOLUTION_OUTCOMES
+    }
+    for _ref, supertype_resolution in supertype_rows:
+        supertype_outcomes[supertype_resolution.outcome] = (
+            supertype_outcomes.get(supertype_resolution.outcome, 0) + 1
+        )
+    supertype_resolved = supertype_outcomes.get("resolved", 0)
+    supertype_unresolved = supertype_outcomes.get("unresolved", 0)
+    supertype_denominator = supertype_resolved + supertype_unresolved
+    supertype_rate = (
+        float(supertype_resolved) / supertype_denominator
+        if supertype_denominator else 0.0
+    )
+    now = time.perf_counter()
+    timings["supertypes"] = round(now - previous, 3)
+    previous = now
+
     emit("persist", "writing sqlite")
     db_path = os.path.join(out_dir, "index.sqlite3")
     db.write_index(
         db_path, root, records, extracted,
         skipped=_skipped, parallel_jobs=parallel_jobs,
         imports=import_rows, resolutions=resolution_rows,
+        supertypes=supertype_rows,
     )
     now = time.perf_counter()
     timings["persist"] = round(now - previous, 3)
@@ -119,5 +176,6 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     return PipelineResult(
         db_path, len(records), len(analyzable), len(extracted), timings,
         _skipped, parallel_jobs, len(import_rows), import_forms,
-        import_outcomes, internal_rate,
+        import_outcomes, internal_rate, len(supertype_rows),
+        supertype_outcomes, supertype_rate,
     )
