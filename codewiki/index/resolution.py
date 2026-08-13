@@ -174,6 +174,22 @@ def _unresolved(file_path: str, name: str, rule: Optional[int], candidates) -> T
     )
 
 
+def _classify_candidates(file_path: str, name: str, candidates,
+                         lookup: ResolutionIndex,
+                         rule: Optional[int] = None) -> TypeResolution:
+    """Classify possible qualified targets using repository package prefixes."""
+    candidates = _unique(candidates)
+    matching_packages = [
+        _longest_existing_package(candidate, lookup.packages)
+        for candidate in candidates
+    ]
+    if any(package in lookup.analyzable_packages for package in matching_packages):
+        return TypeResolution(file_path, name, None, rule, "unresolved", candidates)
+    if any(package is not None for package in matching_packages):
+        return TypeResolution(file_path, name, None, rule, "excluded", candidates)
+    return TypeResolution(file_path, name, None, None, "external", candidates)
+
+
 def resolve_type(
     file_path: str,
     name: str,
@@ -247,6 +263,40 @@ def resolve_type(
         return TypeResolution(file_path, name, None, None, "external", _unique(possible))
 
     return _unresolved(file_path, name, None, [])
+
+
+def resolve_supertype(
+    ref,
+    file_packages: Dict[str, Optional[str]],
+    types: Sequence[TypeInfo],
+    imports_by_file: Dict[str, Sequence],
+    lookup: Optional[ResolutionIndex] = None,
+    prepared_imports: Optional[_FileImports] = None,
+) -> TypeResolution:
+    """Resolve a supertype reference, including qualified Java type names."""
+    lookup = lookup or build_lookup(types, file_packages.values())
+    if "." not in ref.name:
+        return resolve_type(
+            ref.path, ref.name, file_packages, types, imports_by_file,
+            lookup, prepared_imports,
+        )
+    if ref.name in lookup.internal:
+        return TypeResolution(
+            ref.path, ref.name, ref.name, 5, "resolved", [ref.name]
+        )
+    outer_name, rest = ref.name.split(".", 1)
+    outer = resolve_type(
+        ref.path, outer_name, file_packages, types, imports_by_file,
+        lookup, prepared_imports,
+    )
+    if outer.outcome == "resolved" and outer.resolved_fqn:
+        candidate = outer.resolved_fqn + "." + rest
+        if candidate in lookup.internal:
+            return TypeResolution(
+                ref.path, ref.name, candidate, 6, "resolved", [candidate]
+            )
+        return _classify_candidates(ref.path, ref.name, [candidate], lookup, 6)
+    return _classify_candidates(ref.path, ref.name, [ref.name], lookup)
 
 
 def resolve_import(record, types: Sequence[TypeInfo], packages: Iterable = (),
