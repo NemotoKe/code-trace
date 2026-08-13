@@ -1,6 +1,6 @@
 ---
 name: codex-cli-delegation
-description: Delegate independently evaluable, bounded implementation tasks to Codex CLI using gpt-5.6-luna with max reasoning, while the outer agent owns repository inspection, task decomposition, acceptance criteria, diff review, and independent verification. Use when the user explicitly asks to delegate implementation to Codex CLI.
+description: Delegate independently evaluable, bounded implementation tasks to Codex CLI using gpt-5.6-luna with max reasoning, while the outer agent owns repository inspection, task decomposition, acceptance criteria, diff review, independent verification, and mutation testing. Use when the user explicitly asks to delegate implementation to Codex CLI.
 ---
 
 # Codex CLI delegation
@@ -53,11 +53,15 @@ dropped two instructions; narrowing to 6 still produced a defect affecting
 
 ## Build the delegated task
 
-Before writing or sending each implementation task, use the
-`break-down-task-creator` skill to turn that task unit into a concise,
-self-contained implementation prompt. Treat its output as the task body and
-preserve its objective, requirements, constraints, acceptance criteria, TDD
-scenarios, and non-goals.
+Before writing or sending each task, use the `break-down-task-creator` skill to
+turn that unit into a concise, self-contained prompt. Treat its output as the
+task body and preserve its objective, requirements, constraints, acceptance
+criteria, TDD scenarios, and non-goals.
+
+This applies to **every** delegation, not only implementation ones. A
+test-building or review task written as a loose request produces loose work; the
+same structure — contract as concrete cases, explicit scope, explicit non-goals,
+required verification — is what makes any of them checkable.
 
 Do not combine unrelated outcomes into one delegation. If units depend on one
 another, state the dependency and delegate them in order; still give each unit
@@ -120,22 +124,24 @@ For each implementation unit:
 3. Once the units that make up one user-visible capability are all in, start a
    separate Luna max invocation using the `integration-test-builder` skill
    (read `skills/integration-test-builder/SKILL.md` when using the
-   repository-local copy). Give it the capability's requirements, acceptance
-   criteria, changed files, and relevant test results. Have it add or improve
-   independently executable integration tests and run them.
-4. After the integration-test-builder task finishes, start another separate
-   Luna max invocation using the `integration-reviewer` skill (read
-   `skills/integration-reviewer/SKILL.md` when using the repository-local
-   copy). Ask it to inspect the capability and return the skill's
-   evidence-based PASS or FAIL verdict. Use a fresh session so the review is
-   not based on the implementer's conclusions.
-5. Mark the capability complete only when its acceptance criteria are
-   satisfied, the relevant tests pass, and the integration reviewer returns
-   PASS.
-6. If implementation, integration testing, or review fails, send a bounded
-   corrective task to Luna, then repeat the post-unit checks before continuing.
+   repository-local copy). **Write its prompt with the same discipline as an
+   implementation prompt** — state the contract as concrete cases with expected
+   results, name the boundaries to cross, and say what is already covered so it
+   does not re-tread. A vague "add integration tests" produces tests that
+   restate the implementation.
+4. **Run mutation testing yourself.** This is the gate, not the reviewer.
+   See "Mutation testing" below.
+5. Run the `integration-reviewer` skill (read
+   `skills/integration-reviewer/SKILL.md` when using the repository-local copy)
+   in a fresh Luna max session — but only where a wrong answer propagates:
+   data other units will build on, a schema, a resolver whose output becomes
+   edges. Skip it for thin wrappers over an already-reviewed layer.
+6. Mark the capability complete when its acceptance criteria are satisfied, the
+   tests pass, and the mutants are caught.
+7. If any step fails, send a bounded corrective task to Luna, then repeat the
+   checks before continuing.
 
-Steps 1 and 2 run per implementation unit. Steps 3 and 4 run **per capability**,
+Steps 1 and 2 run per implementation unit. Steps 3 to 5 run **per capability**,
 not per unit: once units are small enough to review individually, running the
 integration skills against each one costs more round trips than it detects.
 
@@ -146,6 +152,41 @@ defects the prompt never mentioned.
 Keep implementation, integration-test-builder, and integration-reviewer work
 as separate Codex invocations. Apply this loop to each implementation unit;
 do not recursively apply it to the test-builder or reviewer tasks themselves.
+
+## Mutation testing
+
+A passing suite proves nothing on its own — the tests and the code were usually
+written by the same worker. Break the implementation on purpose and check the
+suite notices.
+
+```bash
+git worktree add <scratch> HEAD        # never mutate the working tree
+```
+
+Copy in any uncommitted test files, apply one mutation, run the suite, revert,
+repeat. Target the decisions the contract names: traversal order, rule
+precedence, a filter's comparison operator, what goes in a denominator, which
+clause is parsed.
+
+Read every survivor before reporting it. **An equivalent mutant changes no
+behaviour and is not a test gap** — a dedupe over already-unique keys, or a
+guard the caller already guarantees. Two of eight mutants on this repository
+were equivalent, and reporting them as gaps would have sent a worker to write
+tests for nothing. Where a guard is redundant only because of what upstream
+happens to do today, say so: nothing protects it if upstream changes.
+
+This is cheap and it is the highest-yield check available. On the type-hierarchy
+capability it produced the only genuine finding, while the test-builder found
+none and the reviewer's earlier findings included one false positive and one
+miss.
+
+## Re-measuring on a large corpus
+
+Verifying against a big real repository is worth it, but do not re-index it for
+every unit. Re-index only when the index content can actually have changed —
+extraction, resolution, or persistence. A query-layer or CLI unit reuses the
+existing index. When behaviour should be unchanged, compare table hashes
+against the previous index rather than re-reading the numbers by eye.
 
 ## Model and reasoning effort
 
