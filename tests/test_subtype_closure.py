@@ -82,6 +82,49 @@ class SubtypeClosureTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def _insert_root_cycle_rows(self):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            file_ids = {}
+            for name in ("A", "B"):
+                cursor = connection.execute(
+                    "INSERT INTO files(path, language, package, lines, sha256, "
+                    "is_test, is_generated) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "src/cyc/%s.java" % name,
+                        "java",
+                        "cyc",
+                        1,
+                        "cyc-%s" % name,
+                        0,
+                        0,
+                    ),
+                )
+                file_ids[name] = cursor.lastrowid
+                connection.execute(
+                    "INSERT INTO symbols(file_id, name, kind, fqn, owner_fqn, "
+                    "params, param_count, signature, line, end_line, confidence) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        file_ids[name], name, "class", "cyc." + name, None,
+                        None, None, "class " + name, 1, 1, "CERTAIN",
+                    ),
+                )
+
+            for owner, target, line in (("A", "B", 2), ("B", "A", 3)):
+                connection.execute(
+                    "INSERT INTO supertypes(file_id, owner_fqn, line, relation, "
+                    "raw, name, target_fqn, rule, outcome, candidates) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        file_ids[owner], "cyc." + owner, line, "extends",
+                        target, target, "cyc." + target, 1, "resolved", "[]",
+                    ),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
     def test_direct_subtype_has_metadata_and_distance(self):
         from codewiki.query.types import SubtypeResult, subtypes
 
@@ -180,6 +223,18 @@ class SubtypeClosureTests(unittest.TestCase):
 
         self.assertEqual(["cycle.B", "cycle.C"], [item.fqn for item in result])
         self.assertEqual([1, 2], [item.distance for item in result])
+
+    def test_cycle_through_queried_type_excludes_root_at_shortest_distance(self):
+        self._insert_root_cycle_rows()
+
+        from codewiki.query.types import subtypes
+
+        result = subtypes(self.db_path, "cyc.A")
+
+        self.assertEqual(
+            [("cyc.B", 1)],
+            [(item.fqn, item.distance) for item in result],
+        )
 
 
 if __name__ == "__main__":
