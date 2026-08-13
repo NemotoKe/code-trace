@@ -7,3 +7,4 @@
 - `[workflow]` 委譲中の working tree の差分を Codex のものと決めつけない。差分の中身から下手人は判定できないので聞く — [workflow/human-annotates-source-during-delegation.md](workflow/human-annotates-source-during-delegation.md) #review #git #delegation
 - `[workflow]` unit ごとの承認を待たない。1 unit = 1 コミットで進める。ただし独立検証と報告は続ける — [workflow/proceed-without-per-unit-approval.md](workflow/proceed-without-per-unit-approval.md) #orchestration #autonomy #commit
 - `[workflow]` 統合の主関門は自分で回す変異テスト。reviewer は伝播する所だけ。等価変異はギャップではない — [workflow/mutation-testing-is-the-gate.md](workflow/mutation-testing-is-the-gate.md) #testing #verification #cost
+- `[gotcha]` 実測は `scan.analyzable` の返すファイルだけを対象にする。生の `os.walk` はビルド出力を数える — [gotcha/measure-with-scan-analyzable.md](gotcha/measure-with-scan-analyzable.md) #measurement #verification
