@@ -77,6 +77,36 @@ class JavaLangFallbackTests(unittest.TestCase):
             ["java.lang.RuntimeException"], result.candidates
         )
 
+    def test_public_java_lang_supertypes_fall_back_to_external(self):
+        from codewiki.index.resolution import build_lookup, resolve_supertype
+        from codewiki.index.supertypes import SupertypeRef
+
+        file_packages = {self.PATH: "app"}
+        lookup = build_lookup(
+            (), ["app"], analyzable_packages=["app"]
+        )
+        imports_by_file = {self.PATH: []}
+        names = (
+            "ReflectiveOperationException",
+            "WrongThreadException",
+            "MatchException",
+            "Compiler",
+        )
+
+        for name in names:
+            with self.subTest(name=name):
+                result = resolve_supertype(
+                    SupertypeRef(
+                        self.PATH, "app.Child", 1, "extends", name, name
+                    ),
+                    file_packages, (), imports_by_file, lookup=lookup,
+                )
+
+                self.assertEqual("external", result.outcome)
+                self.assertIsNone(result.resolved_fqn)
+                self.assertEqual(7, result.rule)
+                self.assertEqual(["java.lang." + name], result.candidates)
+
     def test_same_package_package_shadows_java_lang_fallback(self):
         result = self._resolve(
             "Package",

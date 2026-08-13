@@ -244,7 +244,7 @@ def _name_without_type_arguments(raw: str) -> str:
             angle_depth -= 1
         elif angle_depth == 0:
             result.append(char)
-    return "".join(result).strip()
+    return re.sub(r"\s*\.\s*", ".", "".join(result).strip())
 
 
 def extract(rel_path: str, language: str, text: str,

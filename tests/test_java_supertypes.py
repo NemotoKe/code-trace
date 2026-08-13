@@ -187,6 +187,22 @@ class JavaSupertypeExtractorTests(unittest.TestCase):
             ],
         )
 
+    def test_qualified_name_normalizes_dot_whitespace_but_raw_is_unchanged(self):
+        refs = self._extract(
+            "class Child extends p . Outer . Inner {\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            [(
+                "Child", "extends", "p . Outer . Inner", "p.Outer.Inner", 1,
+            )],
+            [
+                (ref.owner_fqn, ref.relation, ref.raw, ref.name, ref.line)
+                for ref in refs
+            ],
+        )
+
     def test_non_java_input_is_empty(self):
         from codewiki.index.supertypes import extract
 
