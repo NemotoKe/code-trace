@@ -7,7 +7,7 @@ import sys
 
 from .index import pipeline
 from .query.symbols import QueryError, search_path
-from .query.types import TypeQueryError, resolve_type_path
+from .query.types import TypeQueryError, resolve_type_path, subtypes
 
 
 def _nonnegative(value):
@@ -36,6 +36,12 @@ def _parser():
     resolve.add_argument("--from", dest="from_path", required=True)
     resolve.add_argument("--out", default=None)
     resolve.add_argument("--json", action="store_true")
+    impls = commands.add_parser("impls")
+    impls.add_argument("fqn")
+    impls.add_argument("--out", default=None)
+    impls.add_argument("--json", action="store_true")
+    impls.add_argument("--direct", action="store_true")
+    impls.add_argument("--limit", type=_nonnegative, default=None)
     return parser
 
 
@@ -131,6 +137,33 @@ def _resolve_type(args):
     return 0
 
 
+def _impls(args):
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    results = subtypes(os.path.join(out, "index.sqlite3"), args.fqn)
+    if args.direct:
+        results = [item for item in results if item.distance == 1]
+    truncated = args.limit is not None and len(results) > max(0, args.limit)
+    if args.limit is not None:
+        results = results[:max(0, args.limit)]
+    if args.json:
+        print(json.dumps({
+            "fqn": args.fqn,
+            "direct": args.direct,
+            "count": len(results),
+            "truncated": truncated,
+            "results": [item.as_dict() for item in results],
+        }, ensure_ascii=False, separators=(",", ":")))
+        return 0
+    for item in results:
+        print("%s %s %d %s %s:%d" % (
+            item.fqn, item.kind, item.distance, item.relation, item.path, item.line,
+        ))
+    if truncated:
+        print("truncated: limit reached")
+    print("%d subtypes" % len(results))
+    return 0
+
+
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
@@ -141,6 +174,8 @@ def main(argv=None):
             return _index(args)
         if args.command == "symbol":
             return _symbol(args)
+        if args.command == "impls":
+            return _impls(args)
         return _resolve_type(args)
     except (OSError, QueryError, TypeQueryError, RuntimeError, ValueError) as exc:
         message = str(exc)

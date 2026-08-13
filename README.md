@@ -46,6 +46,18 @@ does not make an import internal. JSON always has `file`, `name`,
 `resolved_fqn`, `rule`, `outcome`, and `candidates` keys; absent FQNs and rules
 are `null`, and no-match exits 0.
 
+Show the indexed subtype closure of a fully qualified type:
+
+```text
+python3 -m codewiki impls com.acme.Base --out .codewiki
+python3 -m codewiki impls com.acme.Base --out .codewiki --direct --limit 10
+python3 -m codewiki impls com.acme.Base --out .codewiki --json
+```
+
+Results are ordered by distance and FQN. `--direct` keeps only types that name
+the queried type directly, and `--limit` keeps the nearest results. JSON always
+has `fqn`, `direct`, `count`, `truncated`, and `results` keys; no-match exits 0.
+
 ## Determinism and schema
 
 Files and symbols are sorted before insertion, so logical rows and
