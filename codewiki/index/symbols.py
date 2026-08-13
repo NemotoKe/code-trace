@@ -12,6 +12,11 @@ MAX_SIGNATURE = 200
 MAX_BODY_SCAN_LINES = 10000
 
 
+_NOISE_NONE = 0
+_BLOCK_COMMENT = 1
+_TEXT_BLOCK = 2
+
+
 @dataclass
 class Symbol:
     path: str
@@ -77,25 +82,66 @@ def _jvm_match(text: str):
     return match
 
 
-def strip_noise(line: str, in_block: bool = False) -> Tuple[str, bool]:
-    """Remove Java strings/comments so braces in prose cannot close a body."""
-    if not in_block and not any(token in line for token in ("/", '"', "'")):
-        return line, False
+def _is_escaped(text: str, position: int) -> bool:
+    backslashes = 0
+    position -= 1
+    while position >= 0 and text[position] == "\\":
+        backslashes += 1
+        position -= 1
+    return backslashes % 2 == 1
+
+
+def _is_text_block_opening(line: str, position: int) -> bool:
+    return (
+        line.startswith('"""', position)
+        and not line[position + 3:].strip()
+        and not _is_escaped(line, position)
+    )
+
+
+def _text_block_end(line: str, start: int) -> int:
+    position = line.find('"""', start)
+    while position >= 0:
+        if not _is_escaped(line, position):
+            return position + 3
+        position = line.find('"""', position + 1)
+    return -1
+
+
+def strip_noise(line: str, noise_state: int = False) -> Tuple[str, int]:
+    """Remove Java strings/comments/text blocks so prose cannot close a body."""
+    noise_state = int(noise_state)
+    if noise_state == _NOISE_NONE and not any(
+            token in line for token in ("/", '"', "'")):
+        return line, _NOISE_NONE
     out = []
     index = 0
     while index < len(line):
-        if in_block:
+        if noise_state == _TEXT_BLOCK:
+            end = _text_block_end(line, index)
+            if end < 0:
+                return "".join(out), _TEXT_BLOCK
+            index = end
+            noise_state = _NOISE_NONE
+            out.append(" ")
+            continue
+        if noise_state == _BLOCK_COMMENT:
             end = line.find("*/", index)
             if end < 0:
-                return "".join(out), True
+                return "".join(out), _BLOCK_COMMENT
             index = end + 2
-            in_block = False
+            noise_state = _NOISE_NONE
             continue
         if line.startswith("//", index):
             break
         if line.startswith("/*", index):
-            in_block = True
+            noise_state = _BLOCK_COMMENT
             index += 2
+            continue
+        if _is_text_block_opening(line, index):
+            out.append(" ")
+            index += 3
+            noise_state = _TEXT_BLOCK
             continue
         if line[index] in ('"', "'"):
             quote = line[index]
@@ -112,7 +158,7 @@ def strip_noise(line: str, in_block: bool = False) -> Tuple[str, bool]:
             continue
         out.append(line[index])
         index += 1
-    return "".join(out), in_block
+    return "".join(out), noise_state
 
 
 def _mask_annotations(text: str) -> str:
@@ -135,9 +181,9 @@ def _mask_annotations(text: str) -> str:
 def _brace_body_end(lines: List[str], start_index: int, memo=None) -> Optional[int]:
     depth = 0
     found = False
-    in_block = False
+    noise_state = False
     for index in range(start_index, min(len(lines), start_index + MAX_BODY_SCAN_LINES)):
-        text, in_block = strip_noise(lines[index], in_block)
+        text, noise_state = strip_noise(lines[index], noise_state)
         text = _mask_annotations(text)
         for char in text:
             if char == "{":
@@ -538,9 +584,9 @@ def _raw_signature(lines: List[str], start_index: int) -> str:
     parts = []
     balance = 0
     seen_parenthesis = False
-    in_block = False
+    noise_state = False
     for index in range(start_index, min(len(lines), start_index + MAX_BODY_SCAN_LINES)):
-        cleaned, in_block = strip_noise(lines[index], in_block)
+        cleaned, noise_state = strip_noise(lines[index], noise_state)
         parts.append(cleaned.strip())
         if not seen_parenthesis:
             declaration = _remove_annotations(cleaned)
@@ -745,9 +791,9 @@ def extract(rel_path: str, language: str, text: str) -> List[Symbol]:
         return []
     lines = text.splitlines()
     clean_lines = []
-    in_block = False
+    noise_state = False
     for original in lines:
-        cleaned, in_block = strip_noise(original, in_block)
+        cleaned, noise_state = strip_noise(original, noise_state)
         clean_lines.append(cleaned)
     line_starts = _line_starts(clean_lines)
     package = _find_package(clean_lines)
@@ -776,9 +822,9 @@ def _regex_symbols(rel_path: str, language: str, text: str) -> List[Symbol]:
 
 
 def package_of(text: str) -> Optional[str]:
-    in_block = False
+    noise_state = False
     for original in text.splitlines():
-        line, in_block = strip_noise(original, in_block)
+        line, noise_state = strip_noise(original, noise_state)
         match = re.match(r"^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;", line)
         if match:
             return match.group(1)

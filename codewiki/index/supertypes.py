@@ -5,7 +5,15 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from typing import List
 
-from .symbols import Symbol, strip_noise
+from .symbols import (
+    Symbol,
+    _BLOCK_COMMENT,
+    _NOISE_NONE,
+    _TEXT_BLOCK,
+    _is_text_block_opening,
+    _text_block_end,
+    strip_noise,
+)
 
 
 @dataclass(frozen=True)
@@ -27,21 +35,33 @@ _DECLARATION_KEYWORDS = {
 _WORD = re.compile(r"[A-Za-z_$][\w$]*")
 
 
-def _mask_line(line: str, in_block: bool):
+def _mask_line(line: str, noise_state: int = False):
     """Blank Java noise while retaining every character column."""
+    noise_state = int(noise_state)
     chars = list(line)
     index = 0
     length = len(line)
     while index < length:
-        if in_block:
+        if noise_state == _TEXT_BLOCK:
+            end = _text_block_end(line, index)
+            if end < 0:
+                for position in range(index, length):
+                    chars[position] = " "
+                return "".join(chars), _TEXT_BLOCK
+            for position in range(index, end):
+                chars[position] = " "
+            index = end
+            noise_state = _NOISE_NONE
+            continue
+        if noise_state == _BLOCK_COMMENT:
             end = line.find("*/", index)
             end = length if end < 0 else end + 2
             for position in range(index, end):
                 chars[position] = " "
             index = end
             if end == length and not line.endswith("*/"):
-                return "".join(chars), True
-            in_block = False
+                return "".join(chars), _BLOCK_COMMENT
+            noise_state = _NOISE_NONE
             continue
         if line.startswith("//", index):
             for position in range(index, length):
@@ -54,7 +74,13 @@ def _mask_line(line: str, in_block: bool):
                 chars[position] = " "
             index = end
             if end == length and not line.endswith("*/"):
-                return "".join(chars), True
+                return "".join(chars), _BLOCK_COMMENT
+            continue
+        if _is_text_block_opening(line, index):
+            for position in range(index, index + 3):
+                chars[position] = " "
+            index += 3
+            noise_state = _TEXT_BLOCK
             continue
         if line[index] in ('"', "'"):
             quote = line[index]
@@ -72,21 +98,21 @@ def _mask_line(line: str, in_block: bool):
             index = position
             continue
         index += 1
-    return "".join(chars), in_block
+    return "".join(chars), noise_state
 
 
 def _clean_lines(lines):
     """Use the shared noise rules and retain offsets for source slicing."""
     cleaned = []
-    in_block = False
+    noise_state = False
     for original in lines:
-        stripped, next_in_block = strip_noise(original, in_block)
-        if stripped == original and not in_block:
+        stripped, next_noise_state = strip_noise(original, noise_state)
+        if stripped == original and not noise_state:
             cleaned.append(stripped)
         else:
-            masked, _mask_in_block = _mask_line(original, in_block)
+            masked, _mask_noise_state = _mask_line(original, noise_state)
             cleaned.append(masked)
-        in_block = next_in_block
+        noise_state = next_noise_state
     return cleaned
 
 

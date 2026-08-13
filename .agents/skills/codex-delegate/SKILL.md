@@ -162,19 +162,26 @@ suite notices.
 
 ```bash
 git worktree add <scratch> HEAD        # never mutate the working tree
+cp <uncommitted files> <scratch>/...   # the work under test is usually uncommitted
+cd <scratch> && git add -A && git commit -m baseline
 ```
 
-Copy in any uncommitted test files, apply one mutation, run the suite, revert,
-repeat. Target the decisions the contract names: traversal order, rule
+**Commit that baseline inside the scratch worktree.** The revert between mutations
+is `git checkout -- .`, which otherwise throws away the very files you copied in
+and silently leaves every mutation reporting "anchor not found".
+
+Then apply one mutation, run the suite, revert, repeat. Target the decisions the contract names: traversal order, rule
 precedence, a filter's comparison operator, what goes in a denominator, which
 clause is parsed.
 
-Read every survivor before reporting it. **An equivalent mutant changes no
-behaviour and is not a test gap** — a dedupe over already-unique keys, or a
-guard the caller already guarantees. Two of eight mutants on this repository
-were equivalent, and reporting them as gaps would have sent a worker to write
-tests for nothing. Where a guard is redundant only because of what upstream
-happens to do today, say so: nothing protects it if upstream changes.
+Read every survivor before reporting it, and prove it non-equivalent by running
+the mutated code on a concrete input and showing the output differs. **An
+equivalent mutant changes no behaviour and is not a test gap** — a dedupe over
+already-unique keys, or a guard the caller already guarantees. Three of thirteen
+mutants on this repository were equivalent, one of them because the mutation
+itself was a syntactic no-op. Reporting those as gaps would have sent a worker
+to write tests for nothing. Where a guard is redundant only because of what
+upstream happens to do today, say so: nothing protects it if upstream changes.
 
 This is cheap and it is the highest-yield check available. On the type-hierarchy
 capability it produced the only genuine finding, while the test-builder found
