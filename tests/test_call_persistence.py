@@ -150,6 +150,86 @@ class CallPersistenceTests(unittest.TestCase):
                 })
             )
 
+    def test_pipeline_counts_call_sites_separately_from_call_rows(self):
+        from codewiki.index import pipeline
+
+        with tempfile.TemporaryDirectory(prefix="codewiki-call-ambiguous-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-call-ambiguous-out-") as out:
+            self._write_file(
+                root,
+                "src/p/Caller.java",
+                "package p;\n"
+                "class Caller {\n"
+                "    void run(C value) { value.run(); }\n"
+                "}\n",
+            )
+            self._write_file(
+                root,
+                "src/p/L.java",
+                "package p;\ninterface L { void run(); }\n",
+            )
+            self._write_file(
+                root,
+                "src/p/R.java",
+                "package p;\ninterface R { void run(); }\n",
+            )
+            self._write_file(
+                root,
+                "src/p/C.java",
+                "package p;\nclass C implements L, R {}\n",
+            )
+
+            result = pipeline.run(root, out, jobs=1)
+
+            self.assertEqual(1, result.calls_found)
+            self.assertEqual(2, result.calls_rows)
+            self.assertEqual(
+                {
+                    "receiver": 1,
+                    "bare": 0,
+                    "chained": 0,
+                    "method_ref": 0,
+                    "constructor": 0,
+                },
+                result.call_forms,
+            )
+            self.assertEqual(
+                {"CONFIRMED": 0, "POSSIBLE": 1, "UNRESOLVED": 0},
+                result.call_confidences,
+            )
+
+            connection = sqlite3.connect(result.db_path)
+            try:
+                rows = connection.execute(
+                    "SELECT target_fqn, candidates FROM calls ORDER BY call_id"
+                ).fetchall()
+            finally:
+                connection.close()
+
+            indexed = subprocess.run(
+                [
+                    sys.executable, "-m", "codewiki", "index", root,
+                    "--out", out, "--jobs", "1", "--quiet",
+                ],
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual(
+            [
+                ('p.L.run', '["p.L.run","p.R.run"]'),
+                ('p.R.run', '["p.L.run","p.R.run"]'),
+            ],
+            rows,
+        )
+        self.assertEqual(0, indexed.returncode, indexed.stderr)
+        self.assertIn("calls found: 1", indexed.stdout)
+        self.assertIn("calls rows: 2", indexed.stdout)
+        self.assertIn("calls form receiver: 1", indexed.stdout)
+        self.assertIn("calls confidence POSSIBLE: 1", indexed.stdout)
+
     def test_pipeline_reads_each_java_analysis_item_once_and_keeps_call_resolution(self):
         from unittest.mock import patch
 
@@ -218,6 +298,7 @@ class CallPersistenceTests(unittest.TestCase):
         self.assertEqual(0, completed.returncode, completed.stderr)
         for line in (
             "calls found: 6",
+            "calls rows: same as call sites",
             "calls form receiver: 3",
             "calls form bare: 1",
             "calls form chained: 0",
@@ -382,7 +463,7 @@ class CallPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(2, sum(1 for row in actual if row[5] == "method_ref"))
 
-    def test_writer_rejects_multi_target_resolution(self):
+    def test_writer_persists_one_row_per_distinct_target(self):
         from codewiki.index.callgraph import CallResolution
         from codewiki.index.calls import CallSite
         from codewiki.index.scan import FileRecord
@@ -401,14 +482,39 @@ class CallPersistenceTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory(prefix="codewiki-call-failure-") as out:
-            with self.assertRaisesRegex(ValueError, "multiple targets"):
-                db.write_index(
-                    os.path.join(out, "index.sqlite3"),
-                    "/repo",
-                    [record],
-                    [],
-                    calls=[resolution],
+            db_path = os.path.join(out, "index.sqlite3")
+            db.write_index(
+                db_path,
+                "/repo",
+                [record],
+                [],
+                calls=[resolution],
+            )
+            connection = db.open_index(db_path)
+            try:
+                rows = connection.execute(
+                    "SELECT caller_fqn, caller_kind, line, form, receiver, name, "
+                    "owner_fqn, target_fqn, confidence, reason, candidates "
+                    "FROM calls ORDER BY call_id"
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual(
+            [
+                (
+                    "p.Caller.run", "method", 3, "receiver", "foo", "run",
+                    "p.Foo", "a.Foo.run", "POSSIBLE", "overloaded",
+                    '["a.Foo.run","z.Foo.run"]',
+                ),
+                (
+                    "p.Caller.run", "method", 3, "receiver", "foo", "run",
+                    "p.Foo", "z.Foo.run", "POSSIBLE", "overloaded",
+                    '["a.Foo.run","z.Foo.run"]',
                 )
+            ],
+            rows,
+        )
 
 
 if __name__ == "__main__":

@@ -158,18 +158,24 @@ def _visible_declaration(site: CallSite, declarations: Sequence[Declaration],
 def iter_ancestors(
     type_fqn: str,
     supertypes_by_owner: Mapping[str, Tuple[str, ...]],
-) -> Iterator[str]:
-    """Yield resolved supertypes breadth first, stopping at cycles."""
+) -> Iterator[Tuple[str, ...]]:
+    """Yield resolved supertype levels breadth first, stopping at cycles."""
     visited = {type_fqn}
     frontier = list(supertypes_by_owner.get(type_fqn, ()))
     while frontier:
+        level = []
         next_frontier = []
         for ancestor_fqn in frontier:
             if ancestor_fqn in visited:
                 continue
             visited.add(ancestor_fqn)
-            yield ancestor_fqn
-            next_frontier.extend(supertypes_by_owner.get(ancestor_fqn, ()))
+            level.append(ancestor_fqn)
+        if level:
+            yield tuple(level)
+            for ancestor_fqn in level:
+                next_frontier.extend(
+                    supertypes_by_owner.get(ancestor_fqn, ())
+                )
         frontier = next_frontier
 
 
@@ -183,10 +189,11 @@ def _inherited_field_declaration(
     current_type = _enclosing_type(site, type_index)
     if current_type is None:
         return None
-    for ancestor_fqn in iter_ancestors(current_type.fqn, supertypes_by_owner):
-        for declaration in fields_by_owner.get(ancestor_fqn, ()):
-            if declaration.name == site.receiver:
-                return declaration
+    for level in iter_ancestors(current_type.fqn, supertypes_by_owner):
+        for ancestor_fqn in level:
+            for declaration in fields_by_owner.get(ancestor_fqn, ()):
+                if declaration.name == site.receiver:
+                    return declaration
     return None
 
 
@@ -207,8 +214,12 @@ def _members_with_inheritance(
     members = _matching_members(site, owner_fqn, members_by_owner)
     if members:
         return members, False
-    for ancestor_fqn in iter_ancestors(owner_fqn, supertypes_by_owner):
-        members = _matching_members(site, ancestor_fqn, members_by_owner)
+    for level in iter_ancestors(owner_fqn, supertypes_by_owner):
+        members = []
+        for ancestor_fqn in level:
+            members.extend(
+                _matching_members(site, ancestor_fqn, members_by_owner)
+            )
         if members:
             return members, True
     return [], False

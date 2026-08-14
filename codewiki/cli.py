@@ -108,6 +108,10 @@ def _index(args):
         result.supertype_resolution_rate * 100.0
     ))
     print("calls found: %d" % result.calls_found)
+    if result.calls_rows == result.calls_found:
+        print("calls rows: same as call sites")
+    else:
+        print("calls rows: %d" % result.calls_rows)
     for form in ("receiver", "bare", "chained", "method_ref", "constructor"):
         print("calls form %s: %d" % (
             form, (result.call_forms or {}).get(form, 0)

@@ -51,6 +51,7 @@ class PipelineResult:
     supertype_outcomes: Dict[str, int] = None
     supertype_resolution_rate: float = 0.0
     calls_found: int = 0
+    calls_rows: int = 0
     call_forms: Dict[str, int] = None
     call_confidences: Dict[str, int] = None
     call_resolution_rate: float = 0.0
@@ -246,6 +247,10 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     call_resolution_rate = (
         float(call_resolved) / receiver_count if receiver_count else 0.0
     )
+    call_row_count = sum(
+        len(set(call_resolution.targets)) or 1
+        for call_resolution in call_rows
+    )
     now = time.perf_counter()
     timings["calls"] = round(now - previous, 3)
     previous = now
@@ -267,6 +272,6 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         db_path, len(records), len(analyzable), len(extracted), timings,
         _skipped, parallel_jobs, len(import_rows), import_forms,
         import_outcomes, internal_rate, len(supertype_rows),
-        supertype_outcomes, supertype_rate, len(call_sites), call_forms,
-        call_confidences, call_resolution_rate,
+        supertype_outcomes, supertype_rate, len(call_sites), call_row_count,
+        call_forms, call_confidences, call_resolution_rate,
     )

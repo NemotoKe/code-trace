@@ -669,6 +669,32 @@ class JavaCallGraphTests(unittest.TestCase):
             ),
         )
 
+    def test_same_nearest_ancestor_level_collects_all_members(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(C value) { value.run(); } }\n"
+            "interface L { void run(); }\n"
+            "interface R { void run(); }\n"
+            "class C implements L, R {}\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            (
+                "p.C",
+                ("p.L.run", "p.R.run"),
+                "POSSIBLE",
+                "inherited_overloaded",
+            ),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
     def test_inherited_overloaded_members_are_possible_with_deduplicated_targets(self):
         source = (
             "package p;\n"
@@ -895,6 +921,19 @@ class JavaCallGraphTests(unittest.TestCase):
             ),
         )
 
+    def test_iter_ancestors_yields_nearest_and_deeper_levels(self):
+        from codewiki.index.callgraph import iter_ancestors
+
+        supertypes_by_owner = {
+            "p.Start": ("p.Near",),
+            "p.Near": ("p.Far",),
+        }
+
+        self.assertEqual(
+            [("p.Near",), ("p.Far",)],
+            list(iter_ancestors("p.Start", supertypes_by_owner)),
+        )
+
     def test_iter_ancestors_is_breadth_first_and_terminates_on_a_cycle(self):
         from codewiki.index.callgraph import iter_ancestors
 
@@ -906,7 +945,7 @@ class JavaCallGraphTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            ["p.Left", "p.Right", "p.Bottom"],
+            [("p.Left", "p.Right"), ("p.Bottom",)],
             list(iter_ancestors("p.Start", supertypes_by_owner)),
         )
 

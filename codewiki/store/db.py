@@ -271,20 +271,33 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
             )
         )
 
-        for resolution in calls:
-            if len(resolution.targets) > 1:
-                raise ValueError("call resolution has multiple targets")
-
-        def call_row(resolution):
+        def call_row(resolution, target_fqn, candidates):
             site = resolution.site
-            target_fqn = resolution.targets[0] if resolution.targets else None
             return (
                 file_ids[site.path], site.enclosing_fqn, site.enclosing_kind,
                 site.line, site.form, site.receiver, site.name,
                 resolution.owner_fqn, target_fqn, resolution.confidence,
                 resolution.reason,
-                json.dumps(sorted(resolution.targets), ensure_ascii=False,
+                json.dumps(candidates, ensure_ascii=False,
                            separators=(",", ":")),
+            )
+
+        expanded_calls = []
+        for resolution in calls:
+            candidates = sorted(set(resolution.targets))
+            targets = candidates or [None]
+            for target_fqn in targets:
+                expanded_calls.append((resolution, target_fqn, candidates))
+
+        def call_sort_key(item):
+            resolution, target_fqn, candidates = item
+            site = resolution.site
+            return (
+                site.path, site.enclosing_fqn, site.enclosing_kind, site.line,
+                site.form, site.receiver or "", site.name,
+                resolution.owner_fqn or "", target_fqn or "",
+                resolution.confidence, resolution.reason,
+                json.dumps(candidates, ensure_ascii=False, separators=(",", ":")),
             )
 
         connection.executemany(
@@ -292,20 +305,9 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
             "receiver, name, owner_fqn, target_fqn, confidence, reason, candidates) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                call_row(resolution)
-                for resolution in sorted(
-                    calls,
-                    key=lambda item: (
-                        item.site.path, item.site.enclosing_fqn,
-                        item.site.enclosing_kind, item.site.line, item.site.form,
-                        item.site.receiver or "", item.site.name,
-                        item.owner_fqn or "",
-                        item.targets[0] if item.targets else "",
-                        item.confidence, item.reason,
-                        json.dumps(sorted(item.targets), ensure_ascii=False,
-                                   separators=(",", ":")),
-                    )
-                )
+                call_row(resolution, target_fqn, candidates)
+                for resolution, target_fqn, candidates
+                in sorted(expanded_calls, key=call_sort_key)
             )
         )
         for index_name, definition in _INDEX_DEFINITIONS:
