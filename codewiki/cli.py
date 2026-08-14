@@ -92,7 +92,21 @@ def _index(args):
     print("supertype resolution rate: %.1f%%" % (
         result.supertype_resolution_rate * 100.0
     ))
-    for stage in ("scan", "symbols", "imports", "supertypes", "persist", "total"):
+    print("calls found: %d" % result.calls_found)
+    for form in ("receiver", "bare", "chained", "method_ref", "constructor"):
+        print("calls form %s: %d" % (
+            form, (result.call_forms or {}).get(form, 0)
+        ))
+    for confidence in ("CONFIRMED", "POSSIBLE", "UNRESOLVED"):
+        print("calls confidence %s: %d" % (
+            confidence, (result.call_confidences or {}).get(confidence, 0)
+        ))
+    print("call resolution rate (receiver forms only): %.1f%%" % (
+        result.call_resolution_rate * 100.0
+    ))
+    for stage in (
+            "scan", "symbols", "imports", "supertypes", "calls", "persist",
+            "total"):
         print("%s: %.3fs" % (stage, timings.get(stage, 0.0)))
     return 0
 

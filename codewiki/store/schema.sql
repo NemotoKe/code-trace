@@ -73,6 +73,27 @@ CREATE TABLE IF NOT EXISTS supertypes (
     UNIQUE(file_id, line, owner_fqn, relation, raw)
 );
 
+CREATE TABLE IF NOT EXISTS calls (
+    call_id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    caller_fqn TEXT NOT NULL,
+    caller_kind TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    form TEXT NOT NULL CHECK(form IN ('receiver', 'bare', 'chained', 'method_ref', 'constructor')),
+    receiver TEXT,
+    name TEXT NOT NULL,
+    owner_fqn TEXT,
+    target_fqn TEXT,
+    confidence TEXT NOT NULL CHECK(confidence IN ('CONFIRMED', 'POSSIBLE', 'UNRESOLVED')),
+    reason TEXT NOT NULL,
+    candidates TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_fqn);
+CREATE INDEX IF NOT EXISTS idx_calls_target ON calls(target_fqn);
+CREATE INDEX IF NOT EXISTS idx_calls_name ON calls(name);
+CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_id);
+
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_fqn ON symbols(fqn);
 CREATE INDEX IF NOT EXISTS idx_symbols_owner_fqn ON symbols(owner_fqn);

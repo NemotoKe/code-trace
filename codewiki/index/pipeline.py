@@ -9,6 +9,7 @@ from typing import Callable, Dict, Optional
 from .. import parallel
 from ..config import Config
 from ..store import db
+from . import callgraph, calls, declarations
 from . import imports as java_imports
 from . import resolution, scan, supertypes, symbols
 
@@ -18,14 +19,19 @@ def _analyze_java_file(item):
     try:
         text = scan.read_text(root, path)
     except OSError:
-        return path, None, [], [], []
+        return path, None, [], [], [], [], []
     package = symbols.package_of(text)
     if is_generated:
-        return path, package, [], [], []
+        return path, package, [], [], [], [], []
     file_symbols = symbols.extract(path, language, text)
+    file_calls = calls.extract(path, language, text, file_symbols)
+    file_declarations = declarations.extract(path, language, text, file_symbols)
     file_imports = java_imports.parse_imports(path, text)
     file_supertypes = supertypes.extract(path, language, text, file_symbols)
-    return path, package, file_symbols, file_imports, file_supertypes
+    return (
+        path, package, file_symbols, file_imports, file_supertypes,
+        file_calls, file_declarations,
+    )
 
 
 @dataclass
@@ -44,6 +50,10 @@ class PipelineResult:
     supertypes_found: int = 0
     supertype_outcomes: Dict[str, int] = None
     supertype_resolution_rate: float = 0.0
+    calls_found: int = 0
+    call_forms: Dict[str, int] = None
+    call_confidences: Dict[str, int] = None
+    call_resolution_rate: float = 0.0
 
 
 def run(root: str, out_dir: str, config: Optional[Config] = None,
@@ -74,13 +84,22 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     with parallel.Mapper(parallel.resolve_jobs(jobs), len(java_records)) as mapper:
         analyses = mapper.map(_analyze_java_file, analysis_items)
         extracted = []
+        call_sites = []
+        declaration_rows = []
         parsed_imports = []
         supertype_refs = {}
         packages = {}
-        for path, package, file_symbols, file_imports, file_refs in analyses:
+        for (
+            path, package, file_symbols, file_imports, file_refs,
+            file_calls, file_declarations,
+        ) in analyses:
             packages[path] = package
             if file_symbols:
                 extracted.extend(file_symbols)
+            if file_calls:
+                call_sites.extend(file_calls)
+            if file_declarations:
+                declaration_rows.extend(file_declarations)
             if path in analyzable_paths:
                 parsed_imports.append((path, file_imports))
             supertype_refs[path] = file_refs
@@ -161,6 +180,76 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     timings["supertypes"] = round(now - previous, 3)
     previous = now
 
+    emit("calls", "resolving Java calls")
+    members_by_owner_values = {}
+    fields_by_owner_values = {}
+    for item in extracted:
+        if item.owner_fqn and item.kind == "method":
+            members_by_owner_values.setdefault(item.owner_fqn, []).append(item)
+    for item in declaration_rows:
+        if item.kind == "field":
+            fields_by_owner_values.setdefault(item.scope_fqn, []).append(item)
+    members_by_owner = {
+        owner: tuple(sorted(
+            values,
+            key=lambda item: (item.path, item.line, item.name, item.fqn,
+                              item.signature),
+        ))
+        for owner, values in members_by_owner_values.items()
+    }
+    fields_by_owner = {
+        owner: tuple(sorted(
+            values,
+            key=lambda item: (item.path, item.line, item.name, item.type_name,
+                              item.kind),
+        ))
+        for owner, values in fields_by_owner_values.items()
+    }
+    supertypes_by_owner_values = {}
+    for ref, supertype_resolution in supertype_rows:
+        if (supertype_resolution.outcome == "resolved"
+                and supertype_resolution.resolved_fqn is not None):
+            supertypes_by_owner_values.setdefault(ref.owner_fqn, []).append(
+                supertype_resolution.resolved_fqn
+            )
+    supertypes_by_owner = {
+        owner: tuple(sorted(values))
+        for owner, values in supertypes_by_owner_values.items()
+    }
+    call_forms = {
+        form: 0
+        for form in ("receiver", "bare", "chained", "method_ref", "constructor")
+    }
+    call_confidences = {
+        confidence: 0
+        for confidence in ("CONFIRMED", "POSSIBLE", "UNRESOLVED")
+    }
+    call_rows = []
+    for site in call_sites:
+        call_forms[site.form] += 1
+        if site.form == "receiver":
+            call_resolution = callgraph.resolve_receiver_call(
+                site, declaration_rows, file_packages, type_infos,
+                imports_by_file, lookup, members_by_owner,
+                supertypes_by_owner, fields_by_owner,
+            )
+        else:
+            call_resolution = callgraph.CallResolution(
+                site, None, (), "UNRESOLVED", "form_not_resolved",
+            )
+        call_rows.append(call_resolution)
+        call_confidences[call_resolution.confidence] += 1
+    receiver_count = call_forms["receiver"]
+    call_resolved = (
+        call_confidences["CONFIRMED"] + call_confidences["POSSIBLE"]
+    )
+    call_resolution_rate = (
+        float(call_resolved) / receiver_count if receiver_count else 0.0
+    )
+    now = time.perf_counter()
+    timings["calls"] = round(now - previous, 3)
+    previous = now
+
     emit("persist", "writing sqlite")
     db_path = os.path.join(out_dir, "index.sqlite3")
     db.write_index(
@@ -168,6 +257,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         skipped=_skipped, parallel_jobs=parallel_jobs,
         imports=import_rows, resolutions=resolution_rows,
         supertypes=supertype_rows,
+        calls=call_rows,
     )
     now = time.perf_counter()
     timings["persist"] = round(now - previous, 3)
@@ -177,5 +267,6 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         db_path, len(records), len(analyzable), len(extracted), timings,
         _skipped, parallel_jobs, len(import_rows), import_forms,
         import_outcomes, internal_rate, len(supertype_rows),
-        supertype_outcomes, supertype_rate,
+        supertype_outcomes, supertype_rate, len(call_sites), call_forms,
+        call_confidences, call_resolution_rate,
     )

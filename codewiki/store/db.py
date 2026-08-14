@@ -22,6 +22,10 @@ _INDEX_DEFINITIONS = (
     ("idx_type_resolutions_file_name", "type_resolutions(file_id, name)"),
     ("idx_supertypes_owner", "supertypes(owner_fqn)"),
     ("idx_supertypes_target", "supertypes(target_fqn)"),
+    ("idx_calls_caller", "calls(caller_fqn)"),
+    ("idx_calls_target", "calls(target_fqn)"),
+    ("idx_calls_name", "calls(name)"),
+    ("idx_calls_file", "calls(file_id)"),
 )
 
 
@@ -59,7 +63,7 @@ def open_index(path: str) -> sqlite3.Connection:
 def write_index(db_path: str, repo_root: str, files: List, symbols: List,
                 generated_at: Optional[str] = None, skipped=None,
                 parallel_jobs: Optional[int] = None, imports=None,
-                resolutions=None, supertypes=None) -> None:
+                resolutions=None, supertypes=None, calls=None) -> None:
     """Write a complete fresh index with IDs assigned from sorted input rows."""
     parent = os.path.dirname(os.path.abspath(db_path))
     if not os.path.isdir(parent):
@@ -101,6 +105,7 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
         imports = list(imports or [])
         resolutions = list(resolutions or [])
         supertypes = list(supertypes or [])
+        calls = list(calls or [])
         import_forms = {form: 0 for form in _IMPORT_FORMS}
         import_outcomes = {outcome: 0 for outcome in _IMPORT_OUTCOMES}
         for record, resolution in imports:
@@ -261,6 +266,44 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
                     key=lambda item: (
                         item[0].path, item[0].line, item[0].owner_fqn,
                         item[0].relation, item[0].raw, item[0].name,
+                    )
+                )
+            )
+        )
+
+        for resolution in calls:
+            if len(resolution.targets) > 1:
+                raise ValueError("call resolution has multiple targets")
+
+        def call_row(resolution):
+            site = resolution.site
+            target_fqn = resolution.targets[0] if resolution.targets else None
+            return (
+                file_ids[site.path], site.enclosing_fqn, site.enclosing_kind,
+                site.line, site.form, site.receiver, site.name,
+                resolution.owner_fqn, target_fqn, resolution.confidence,
+                resolution.reason,
+                json.dumps(sorted(resolution.targets), ensure_ascii=False,
+                           separators=(",", ":")),
+            )
+
+        connection.executemany(
+            "INSERT INTO calls(file_id, caller_fqn, caller_kind, line, form, "
+            "receiver, name, owner_fqn, target_fqn, confidence, reason, candidates) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                call_row(resolution)
+                for resolution in sorted(
+                    calls,
+                    key=lambda item: (
+                        item.site.path, item.site.enclosing_fqn,
+                        item.site.enclosing_kind, item.site.line, item.site.form,
+                        item.site.receiver or "", item.site.name,
+                        item.owner_fqn or "",
+                        item.targets[0] if item.targets else "",
+                        item.confidence, item.reason,
+                        json.dumps(sorted(item.targets), ensure_ascii=False,
+                                   separators=(",", ":")),
                     )
                 )
             )
