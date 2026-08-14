@@ -18,6 +18,12 @@ class SqlLiteral:
 
 
 @dataclass(frozen=True)
+class TableAccess:
+    table: str
+    access: str
+
+
+@dataclass(frozen=True)
 class _StringLiteral:
     start: int
     end: int
@@ -768,6 +774,43 @@ def tables(statement: str, verb: str) -> Tuple[str, ...]:
         return () if candidate is None else _tables_without_alias_paths(
             statement, [candidate],
         )
+
+
+def _write_table_name(statement: str, verb: str) -> Optional[str]:
+    start = _statement_start(statement, verb)
+    if start is None or verb == "select":
+        return None
+
+    if verb == "update":
+        candidate = _table_candidate_after(statement, start)
+    else:
+        required = _FROM_WORD if verb == "delete" else _INTO_WORD
+        match = _top_level_match(required, statement, start, len(statement))
+        if match is None:
+            return None
+        candidate = _table_candidate_after(
+            statement, match.end(), verb == "insert",
+        )
+    return None if candidate is None else candidate[0]
+
+
+def table_accesses(statement: str, verb: str) -> Tuple[TableAccess, ...]:
+    names = tables(statement, verb)
+    if not names:
+        return ()
+
+    normalized_verb = verb.strip().lower()
+    write_name = _write_table_name(statement, normalized_verb)
+    seen = set()
+    result = []
+    for name in names:
+        access = "WRITE" if name == write_name else "READ"
+        pair = (name, access)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        result.append(TableAccess(name, access))
+    return tuple(result)
 
 
 def extract(rel_path: str, language: str, text: str,

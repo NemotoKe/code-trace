@@ -4,6 +4,121 @@ import unittest
 
 
 class JavaSqlTests(unittest.TestCase):
+    def test_table_accesses_case_table(self):
+        from codewiki.index.sql import TableAccess, table_accesses
+
+        cases = [
+            (
+                "SELECT * FROM hfj_spidx_token",
+                "select",
+                (TableAccess("hfj_spidx_token", "READ"),),
+            ),
+            (
+                "SELECT d FROM TagDefinition d WHERE d.myId IN "
+                "(SELECT DISTINCT t.myTagId FROM ResourceTag t "
+                "WHERE t.myResourceType = :res)",
+                "select",
+                (
+                    TableAccess("TagDefinition", "READ"),
+                    TableAccess("ResourceTag", "READ"),
+                ),
+            ),
+            (
+                "SELECT r FROM ResourceTable r LEFT JOIN FETCH "
+                "r.myParamsToken WHERE r.myPid IN ( :IDS )",
+                "select",
+                (TableAccess("ResourceTable", "READ"),),
+            ),
+            (
+                "insert into HFJ_RESOURCE (RES_VERSION, HAS_TAGS) "
+                "values (?, ?)",
+                "insert",
+                (TableAccess("HFJ_RESOURCE", "WRITE"),),
+            ),
+            (
+                "UPDATE Batch2JobInstanceEntity e SET e.myStatus = :status "
+                "WHERE e.myId = :id",
+                "update",
+                (TableAccess("Batch2JobInstanceEntity", "WRITE"),),
+            ),
+            (
+                "DELETE FROM Batch2WorkChunkEntity e "
+                "WHERE e.myInstanceId = :instanceId",
+                "delete",
+                (TableAccess("Batch2WorkChunkEntity", "WRITE"),),
+            ),
+            (
+                "MERGE INTO orders o USING staging s ON (o.id = s.id) "
+                "WHEN MATCHED THEN UPDATE SET o.status = s.status",
+                "merge",
+                (
+                    TableAccess("orders", "WRITE"),
+                    TableAccess("staging", "READ"),
+                ),
+            ),
+            (
+                "SELECT * FROM (",
+                "select",
+                (),
+            ),
+            (
+                "Update succeeded.",
+                "update",
+                (),
+            ),
+            (
+                "DELETE audit_rows WHERE id IN (SELECT id FROM audit)",
+                "delete",
+                (TableAccess("audit", "READ"),),
+            ),
+            (
+                "DELETE FROM orders WHERE id IN (SELECT id FROM audit)",
+                "delete",
+                (
+                    TableAccess("orders", "WRITE"),
+                    TableAccess("audit", "READ"),
+                ),
+            ),
+            (
+                "DELETE FROM a JOIN b ON a.id=b.id",
+                "delete",
+                (
+                    TableAccess("a", "WRITE"),
+                    TableAccess("b", "READ"),
+                ),
+            ),
+            (
+                "UPDATE orders SET s = (SELECT s FROM audit)",
+                "update",
+                (TableAccess("orders", "WRITE"),),
+            ),
+            (
+                "MERGE INTO orders o USING staging s ON (o.id=s.id)",
+                "merge",
+                (
+                    TableAccess("orders", "WRITE"),
+                    TableAccess("staging", "READ"),
+                ),
+            ),
+            (
+                "SELECT x FROM a WHERE y IN (SELECT z FROM b)",
+                "select",
+                (
+                    TableAccess("a", "READ"),
+                    TableAccess("b", "READ"),
+                ),
+            ),
+            (
+                "insert into HFJ_RESOURCE (RES_VERSION) values (?)",
+                "insert",
+                (TableAccess("HFJ_RESOURCE", "WRITE"),),
+            ),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, table_accesses(statement, verb))
+
     def test_tables_extracts_plain_select_target(self):
         from codewiki.index.sql import tables
 
