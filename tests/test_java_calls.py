@@ -36,6 +36,100 @@ class JavaCallTests(unittest.TestCase):
             calls[0].__dict__,
         )
 
+    def test_explicit_type_argument_keeps_named_receiver(self):
+        source = (
+            "class Orders {\n"
+            "    void saveOne() {\n"
+            "        Dao.<String>save();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        calls = self._extract(source)
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual(
+            {
+                "path": "src/Orders.java",
+                "enclosing_fqn": "Orders.saveOne",
+                "enclosing_kind": "method",
+                "line": 3,
+                "form": "receiver",
+                "receiver": "Dao",
+                "name": "save",
+            },
+            calls[0].__dict__,
+        )
+
+    def test_explicit_type_argument_keeps_variable_receiver(self):
+        source = (
+            "class Orders {\n"
+            "    void saveOne() {\n"
+            "        dao.<String>save();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        calls = self._extract(source)
+
+        self.assertEqual(
+            [("receiver", "dao", "save")],
+            [(call.form, call.receiver, call.name) for call in calls],
+        )
+
+    def test_explicit_type_argument_keeps_chained_call(self):
+        source = (
+            "class Orders {\n"
+            "    void saveOne() {\n"
+            "        getBean().<String>save();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        calls = self._extract(source)
+
+        self.assertEqual(
+            [("bare", None, "getBean"), ("chained", None, "save")],
+            [(call.form, call.receiver, call.name) for call in calls],
+        )
+
+    def test_explicit_type_argument_keeps_class_receiver(self):
+        source = (
+            "class Orders {\n"
+            "    void load() {\n"
+            "        Collections.<String>emptyList();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        calls = self._extract(source)
+
+        self.assertEqual(
+            [("receiver", "Collections", "emptyList")],
+            [(call.form, call.receiver, call.name) for call in calls],
+        )
+
+    def test_comparison_is_not_an_explicit_type_argument(self):
+        source = (
+            "class Orders {\n"
+            "    void check() {\n"
+            "        if (a < b && c > d(e));\n"
+            "    }\n"
+            "}\n"
+        )
+
+        calls = self._extract(source)
+
+        self.assertEqual(
+            [("bare", None, "d")],
+            [(call.form, call.receiver, call.name) for call in calls],
+        )
+        self.assertEqual(
+            [],
+            [(call.form, call.receiver, call.name) for call in calls
+             if call.name == "d" and call.form in ("receiver", "chained")],
+        )
+
     def test_bare_call(self):
         source = (
             "class Orders {\n"
@@ -90,6 +184,42 @@ class JavaCallTests(unittest.TestCase):
         )
         self.assertEqual(["Orders.visit", "Orders.visit"],
                          [call.enclosing_fqn for call in calls])
+
+    def test_constructor_method_reference_is_a_constructor_site(self):
+        source = (
+            "class Orders {\n"
+            "    void build() {\n"
+            "        Supplier<Foo> s = Foo::new;\n"
+            "    }\n"
+            "}\n"
+        )
+
+        calls = self._extract(source)
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual(
+            {
+                "path": "src/Orders.java",
+                "enclosing_fqn": "Orders.build",
+                "enclosing_kind": "method",
+                "line": 3,
+                "form": "constructor",
+                "receiver": None,
+                "name": "Foo",
+            },
+            calls[0].__dict__,
+        )
+
+    def test_array_constructor_method_reference_is_ignored(self):
+        source = (
+            "class Orders {\n"
+            "    void build() {\n"
+            "        IntFunction<int[]> factory = int[]::new;\n"
+            "    }\n"
+            "}\n"
+        )
+
+        self.assertEqual([], self._extract(source))
 
     def test_constructor_call_is_not_a_bare_call(self):
         source = (

@@ -20,15 +20,18 @@ class CallSite:
 
 
 _IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
+_TYPE_ARGS = r"<[^(){};]*>"
 _RECV_CALL = re.compile(
     r"(?<![.\w$])\b(?P<recv>" + _IDENT + r")\s*\.\s*"
+    r"(?:(?P<type_args>" + _TYPE_ARGS + r"))?\s*"
     r"(?P<name>" + _IDENT + r")\s*\("
 )
 _BARE_CALL = re.compile(
     r"(?<![.\w$])(?P<name>" + _IDENT + r")\s*\("
 )
 _CHAIN_CALL = re.compile(
-    r"\.\s*(?P<name>" + _IDENT + r")\s*\("
+    r"\.\s*(?:(?P<type_args>" + _TYPE_ARGS + r"))?\s*"
+    r"(?P<name>" + _IDENT + r")\s*\("
 )
 _METHOD_REF = re.compile(
     r"(?P<receiver>" + _IDENT + r")\s*::\s*(?P<name>" + _IDENT + r")"
@@ -368,6 +371,7 @@ def extract(rel_path: str, language: str, text: str,
     headers = type_headers + method_headers
 
     events = []
+    qualified_call_positions = set()
     for match in _NEW.finditer(structural):
         type_name = match.group("type").split(".")[-1].strip()
         events.append((match.start(), 0, "constructor", None, type_name))
@@ -379,14 +383,9 @@ def extract(rel_path: str, language: str, text: str,
         name = match.group("name")
         if name in _KEYWORDS:
             continue
+        if match.group("type_args") is not None:
+            qualified_call_positions.add(position)
         events.append((position, 1, "receiver", match.group("recv"), name))
-
-    for match in _BARE_CALL.finditer(structural):
-        position = match.start()
-        name = match.group("name")
-        if name in _KEYWORDS or _after_new(structural, position):
-            continue
-        events.append((position, 2, "bare", None, name))
 
     for match in _CHAIN_CALL.finditer(structural):
         position = match.start("name")
@@ -395,14 +394,28 @@ def extract(rel_path: str, language: str, text: str,
         name = match.group("name")
         if name in _KEYWORDS:
             continue
+        if match.group("type_args") is not None:
+            qualified_call_positions.add(position)
         events.append((position, 3, "chained", None, name))
+
+    for match in _BARE_CALL.finditer(structural):
+        position = match.start()
+        name = match.group("name")
+        if (name in _KEYWORDS or position in qualified_call_positions
+                or _after_new(structural, position)):
+            continue
+        events.append((position, 2, "bare", None, name))
 
     for match in _METHOD_REF.finditer(structural):
         position = match.start("name")
-        if match.group("name") in _KEYWORDS:
+        receiver = match.group("receiver")
+        name = match.group("name")
+        if name == "new":
+            events.append((position, 0, "constructor", None, receiver))
             continue
-        events.append((position, 4, "method_ref", match.group("receiver"),
-                       match.group("name")))
+        if name in _KEYWORDS:
+            continue
+        events.append((position, 4, "method_ref", receiver, name))
 
     events.sort(key=lambda event: (event[0], event[1]))
     type_cursor = _RangeCursor(type_ranges)
