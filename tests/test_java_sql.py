@@ -4,6 +4,402 @@ import unittest
 
 
 class JavaSqlTests(unittest.TestCase):
+    def test_tables_extracts_plain_select_target(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("hfj_spidx_token",),
+            tables("SELECT * FROM hfj_spidx_token", "select"),
+        )
+
+    def test_tables_extracts_qualified_select_target(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("app.orders",),
+            tables("SELECT * FROM app.orders", "select"),
+        )
+
+    def test_tables_extracts_double_quoted_select_target(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders",),
+            tables('SELECT * FROM "orders"', "select"),
+        )
+
+    def test_tables_extracts_backtick_quoted_select_target(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders",),
+            tables("SELECT * FROM `orders`", "select"),
+        )
+
+    def test_tables_extracts_bracket_quoted_select_target(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders",),
+            tables("SELECT * FROM [orders]", "select"),
+        )
+
+    def test_tables_ignores_select_table_alias(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("ResourceTable",),
+            tables("SELECT r FROM ResourceTable r WHERE ...", "select"),
+        )
+
+    def test_tables_excludes_fetch_alias_path(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("ResourceTable",),
+            tables(
+                "SELECT r FROM ResourceTable r "
+                "LEFT JOIN FETCH r.myParamsToken",
+                "select",
+            ),
+        )
+
+    def test_tables_extracts_insert_target(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("HFJ_RESOURCE",),
+            tables("INSERT INTO HFJ_RESOURCE (A, B) VALUES (?, ?)", "insert"),
+        )
+
+    def test_tables_extracts_update_target(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders",),
+            tables("UPDATE orders o SET o.status = ?", "update"),
+        )
+
+    def test_tables_extracts_delete_target(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("Batch2WorkChunkEntity",),
+            tables(
+                "DELETE FROM Batch2WorkChunkEntity e "
+                "WHERE e.myInstanceId = :id",
+                "delete",
+            ),
+        )
+
+    def test_tables_extracts_merge_target_and_using_source(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders", "staging"),
+            tables("MERGE INTO orders USING staging ON (...)", "merge"),
+        )
+
+    def test_tables_ignores_quoted_and_commented_control_words(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            (
+                "MERGE INTO target ON note = 'USING fake'",
+                "merge",
+                ("target",),
+            ),
+            (
+                'MERGE INTO target ON note = "USING fake"',
+                "merge",
+                ("target",),
+            ),
+            (
+                "INSERT /* INTO fake */ INTO target VALUES (?)",
+                "insert",
+                ("target",),
+            ),
+            (
+                "MERGE INTO target /* USING fake */ USING source ON ...",
+                "merge",
+                ("target", "source"),
+            ),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, tables(statement, verb))
+
+    def test_tables_extracts_join_source(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders", "order_items"),
+            tables(
+                "SELECT * FROM orders o JOIN order_items i "
+                "ON o.id = i.order_id",
+                "select",
+            ),
+        )
+
+    def test_tables_extracts_nested_select_source(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("TagDefinition", "ResourceTag"),
+            tables(
+                "SELECT d FROM TagDefinition d "
+                "WHERE d.myId IN "
+                "(SELECT t.myTagId FROM ResourceTag t)",
+                "select",
+            ),
+        )
+
+    def test_tables_extracts_derived_table_source(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders",),
+            tables("SELECT * FROM (SELECT id FROM orders) t", "select"),
+        )
+
+    def test_tables_rejects_join_alias_path(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders",),
+            tables("SELECT * FROM orders o JOIN o.items i", "select"),
+        )
+
+    def test_tables_rejects_later_declared_alias_path(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders",),
+            tables("SELECT * FROM o.items JOIN orders o ON ...", "select"),
+        )
+
+    def test_tables_filters_alias_paths_across_source_forms(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            (
+                "SELECT * FROM app.orders AS O JOIN o.Items AS I "
+                "JOIN i.parts p",
+                "select",
+                ("app.orders",),
+            ),
+            (
+                'SELECT * FROM "orders" o JOIN o.items i',
+                "select",
+                ("orders",),
+            ),
+            (
+                "UPDATE app.orders AS o SET o.status = ?",
+                "update",
+                ("app.orders",),
+            ),
+            (
+                "MERGE INTO orders AS o USING o.items i ON ...",
+                "merge",
+                ("orders",),
+            ),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, tables(statement, verb))
+
+    def test_tables_extracts_comma_sources(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders", "order_items"),
+            tables("SELECT * FROM orders, order_items", "select"),
+        )
+
+    def test_tables_deduplicates_repeated_join_source(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders",),
+            tables(
+                "SELECT * FROM orders o JOIN orders o2 ON o.id = o2.id",
+                "select",
+            ),
+        )
+
+    def test_tables_preserves_distinct_case_spellings(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders", "ORDERS"),
+            tables(
+                "SELECT * FROM orders JOIN ORDERS "
+                "ON orders.id = ORDERS.id",
+                "select",
+            ),
+        )
+
+    def test_tables_rejects_malformed_and_bind_source_fragments(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            "SELECT * FROM foo-bar",
+            "SELECT * FROM foo/bar",
+            "SELECT * FROM foo?",
+            "SELECT * FROM $1",
+            "SELECT * FROM " + "$" + "{name}",
+            "SELECT * FROM foo bar-baz",
+        ]
+
+        for statement in cases:
+            with self.subTest(statement=statement):
+                self.assertEqual((), tables(statement, "select"))
+
+    def test_tables_collects_comma_sources_after_join_conditions(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            "SELECT * FROM a JOIN b ON a.id = b.id, c",
+            "SELECT * FROM a LEFT JOIN b ON a.id = b.id, c",
+            (
+                "SELECT * FROM a JOIN (SELECT * FROM b) q "
+                "ON 1 = 1, c"
+            ),
+        ]
+
+        for statement in cases:
+            with self.subTest(statement=statement):
+                self.assertEqual(
+                    ("a", "b", "c"), tables(statement, "select"),
+                )
+
+    def test_tables_rejects_missing_non_plain_and_keyword_targets(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            ("SELECT * FROM", "select", ()),
+            (
+                "SELECT * FROM (SELECT * FROM actual_table)",
+                "select",
+                ("actual_table",),
+            ),
+            ("SELECT * FROM (VALUES (?))", "select", ()),
+            ("SELECT * FROM ?", "select", ()),
+            ("SELECT * FROM :table_name", "select", ()),
+            ("SELECT * FROM WHERE id = ?", "select", ()),
+            ("SELECT * FROM NATURAL", "select", ()),
+            ("SELECT * FROM DUAL", "select", ()),
+            ("SELECT * FROM schema . orders", "select", ()),
+            ("INSERT INTO (SELECT * FROM actual_table)", "insert", ()),
+            ("INSERT INTO VALUES (?)", "insert", ()),
+            ("UPDATE SET status = ?", "update", ()),
+            ("UPDATE ? SET status = ?", "update", ()),
+            ("DELETE FROM WHERE id = ?", "delete", ()),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, tables(statement, verb))
+
+    def test_tables_rejects_named_source_keywords(self):
+        from codewiki.index.sql import tables
+
+        keywords = [
+            "SELECT", "WHERE", "SET", "VALUES", "ON", "USING", "JOIN",
+            "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "FETCH",
+            "NATURAL", "AS", "DUAL",
+        ]
+
+        for keyword in keywords:
+            with self.subTest(keyword=keyword):
+                self.assertEqual(
+                    (), tables("SELECT * FROM " + keyword, "select"),
+                )
+
+    def test_tables_preserves_lexical_order_across_nested_and_joined_sources(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("orders", "order_items", "shipments", "audit_log"),
+            tables(
+                "SELECT * FROM orders o "
+                "JOIN (SELECT id FROM order_items) items ON ... "
+                "JOIN shipments s ON ... "
+                "WHERE o.id IN (SELECT id FROM audit_log)",
+                "select",
+            ),
+        )
+
+    def test_tables_filters_alias_paths_from_derived_and_comma_sources(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            (
+                "SELECT * FROM (SELECT id FROM orders) q "
+                "JOIN q.items i",
+                ("orders",),
+            ),
+            (
+                "SELECT * FROM orders o, o.items i, order_items i2",
+                ("orders", "order_items"),
+            ),
+        ]
+
+        for statement, expected in cases:
+            with self.subTest(statement=statement):
+                self.assertEqual(expected, tables(statement, "select"))
+
+    def test_tables_strips_quote_layers_and_deduplicates_returned_spellings(self):
+        from codewiki.index.sql import tables
+
+        self.assertEqual(
+            ("Orders", "ORDERS"),
+            tables(
+                'SELECT * FROM "Orders" '
+                "JOIN `Orders` o ON ... "
+                "JOIN [Orders] o2 ON ... "
+                "JOIN ORDERS o3 ON ...",
+                "select",
+            ),
+        )
+
+    def test_tables_refuses_invalid_join_sources(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            ("SELECT * FROM orders JOIN (VALUES (?))", ("orders",)),
+            ("SELECT * FROM orders JOIN ?", ("orders",)),
+            ("SELECT * FROM orders JOIN :source", ("orders",)),
+            ("SELECT * FROM orders JOIN", ("orders",)),
+            ("SELECT * FROM orders JOIN WHERE id = ?", ("orders",)),
+        ]
+
+        for statement, expected in cases:
+            with self.subTest(statement=statement):
+                self.assertEqual(expected, tables(statement, "select"))
+
+    def test_tables_refuses_invalid_into_and_update_targets(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            ("INSERT INTO (VALUES (?))", "insert", ()),
+            ("INSERT INTO ?", "insert", ()),
+            ("INSERT INTO :target", "insert", ()),
+            ("INSERT INTO", "insert", ()),
+            ("INSERT INTO SELECT id FROM orders", "insert", ()),
+            ("UPDATE (SELECT id FROM orders) SET status = ?", "update", ()),
+            ("UPDATE ? SET status = ?", "update", ()),
+            ("UPDATE :target SET status = ?", "update", ()),
+            ("UPDATE", "update", ()),
+            ("UPDATE SET status = ?", "update", ()),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, tables(statement, verb))
+
     def _extract(self, source, path="src/Orders.java", language="java"):
         from codewiki.index.sql import extract
         from codewiki.index.symbols import extract as extract_symbols

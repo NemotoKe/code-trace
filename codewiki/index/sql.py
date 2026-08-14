@@ -226,6 +226,550 @@ def _has_sql_shape(statement: str, verb: str) -> bool:
     return required is not None and required.search(statement) is not None
 
 
+_TABLE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*"
+_TABLE_IDENTIFIER_PATTERN = re.compile(_TABLE_IDENTIFIER)
+_DOUBLE_QUOTED_TABLE_IDENTIFIER_PATTERN = re.compile(
+    rf'"({_TABLE_IDENTIFIER})"',
+)
+_BACKTICK_QUOTED_TABLE_IDENTIFIER_PATTERN = re.compile(
+    rf'`({_TABLE_IDENTIFIER})`',
+)
+_BRACKET_QUOTED_TABLE_IDENTIFIER_PATTERN = re.compile(
+    rf'\[({_TABLE_IDENTIFIER})\]',
+)
+_FROM_WORD = re.compile(
+    r"(?<![A-Za-z0-9_$])FROM(?![A-Za-z0-9_$])", re.IGNORECASE,
+)
+_SELECT_WORD = re.compile(
+    r"SELECT(?![A-Za-z0-9_$])", re.IGNORECASE,
+)
+_INTO_WORD = re.compile(
+    r"(?<![A-Za-z0-9_$])INTO(?![A-Za-z0-9_$])", re.IGNORECASE,
+)
+_USING_WORD = re.compile(
+    r"(?<![A-Za-z0-9_$])USING(?![A-Za-z0-9_$])", re.IGNORECASE,
+)
+_SOURCE_CONTROL = re.compile(
+    r",|(?<![A-Za-z0-9_$])(?:JOIN|ON|WHERE|GROUP|ORDER|HAVING|LIMIT|"
+    r"UNION|EXCEPT|INTERSECT|RETURNING)(?![A-Za-z0-9_$])",
+    re.IGNORECASE,
+)
+_SOURCE_CLAUSES = frozenset({
+    "WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "UNION",
+    "EXCEPT", "INTERSECT", "RETURNING",
+})
+_SQL_TABLE_KEYWORDS = frozenset({
+    "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "BEGIN", "BETWEEN",
+    "BY", "CASE", "CHECK", "COMMIT", "CONSTRAINT", "CREATE", "CROSS",
+    "CURRENT", "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP",
+    "DATABASE", "DEFAULT", "DELETE", "DESC", "DISTINCT", "DROP", "ELSE",
+    "DUAL", "END", "EXCEPT", "EXISTS", "FETCH", "FOR", "FOREIGN", "FROM",
+    "FULL", "GROUP", "HAVING", "IN", "INDEX", "INNER", "INSERT",
+    "INTERSECT", "INTO", "IS", "JOIN", "KEY", "LEFT", "LIKE", "LIMIT",
+    "MERGE", "NOT", "NULL", "OFFSET", "ON", "OR", "ORDER", "OUTER",
+    "OVER", "PARTITION", "PRIMARY", "REFERENCES", "RETURNING", "RIGHT",
+    "ROLLBACK", "SELECT", "SET", "TABLE", "THEN", "TRUNCATE", "UNION",
+    "UNIQUE", "UPDATE", "USING", "VALUE", "VALUES", "WHEN", "WHERE",
+    "WITH", "NATURAL",
+})
+
+
+def _statement_start(statement: str, verb: str) -> Optional[int]:
+    match = re.match(
+        rf"^\s*{re.escape(verb)}(?![A-Za-z0-9_$])",
+        statement,
+        re.IGNORECASE,
+    )
+    return None if match is None else match.end()
+
+
+def _table_segment_after(statement: str, position: int
+                         ) -> Optional[Tuple[str, int]]:
+    match = _TABLE_IDENTIFIER_PATTERN.match(statement, position)
+    if match is not None:
+        name = match.group(0)
+        if name.startswith("$") and len(name) > 1 and name[1].isdigit():
+            return None
+    else:
+        match = _DOUBLE_QUOTED_TABLE_IDENTIFIER_PATTERN.match(
+            statement, position,
+        )
+        if match is None:
+            match = _BACKTICK_QUOTED_TABLE_IDENTIFIER_PATTERN.match(
+                statement, position,
+            )
+        if match is None:
+            match = _BRACKET_QUOTED_TABLE_IDENTIFIER_PATTERN.match(
+                statement, position,
+            )
+        if match is None:
+            return None
+        name = match.group(1)
+    if name.upper() in _SQL_TABLE_KEYWORDS:
+        return None
+    return name, match.end()
+
+
+def _plain_table_span_after(statement: str, position: int,
+                            allow_parenthesis: bool = False
+                            ) -> Optional[Tuple[str, int]]:
+    while position < len(statement) and statement[position].isspace():
+        position += 1
+
+    first = _table_segment_after(statement, position)
+    if first is None:
+        return None
+
+    names = [first[0]]
+    after_name = first[1]
+    while after_name < len(statement) and statement[after_name] == ".":
+        next_segment = _table_segment_after(statement, after_name + 1)
+        if next_segment is None:
+            return None
+        names.append(next_segment[0])
+        after_name = next_segment[1]
+
+    next_position = after_name
+    while next_position < len(statement) and statement[next_position].isspace():
+        next_position += 1
+    if next_position < len(statement) and statement[next_position] == ".":
+        return None
+    if (not allow_parenthesis and next_position < len(statement)
+            and statement[next_position] == "("):
+        return None
+    return ".".join(names), after_name
+
+
+def _plain_table_after(statement: str, position: int,
+                       allow_parenthesis: bool = False) -> Optional[str]:
+    parsed = _plain_table_span_after(
+        statement, position, allow_parenthesis,
+    )
+    return None if parsed is None else parsed[0]
+
+
+def _table_alias_after(statement: str, position: int) -> Optional[str]:
+    parsed = _table_alias_span_after(statement, position)
+    return None if parsed is None else parsed[0]
+
+
+def _table_alias_span_after(
+        statement: str, position: int
+        ) -> Optional[Tuple[str, int]]:
+    position = _skip_sql_noise(statement, position, len(statement))
+
+    as_match = re.match(
+        r"AS(?![A-Za-z0-9_$])", statement[position:], re.IGNORECASE,
+    )
+    if as_match is not None:
+        position += as_match.end()
+        position = _skip_sql_noise(statement, position, len(statement))
+
+    alias = _TABLE_IDENTIFIER_PATTERN.match(statement, position)
+    if alias is None:
+        return None
+    name = alias.group(0)
+    return (name, alias.end()) \
+        if name.upper() not in _SQL_TABLE_KEYWORDS else None
+
+
+def _source_suffix_is_complete(statement: str, end: int,
+                               allow_parenthesis: bool) -> bool:
+    position = _skip_sql_noise(statement, end, len(statement))
+    if position < len(statement) and position == end:
+        return (allow_parenthesis and statement[end] == "(") \
+            or statement[end] in ",);"
+
+    if position >= len(statement) or statement[position] in ",);":
+        return True
+    if statement[position] == "(":
+        return allow_parenthesis
+
+    token = _TABLE_IDENTIFIER_PATTERN.match(statement, position)
+    if token is None:
+        return False
+    if token.group(0).upper() in _SQL_TABLE_KEYWORDS:
+        return True
+
+    alias_end = token.end()
+    after_alias = alias_end
+    while (after_alias < len(statement)
+           and statement[after_alias].isspace()):
+        after_alias += 1
+    if after_alias >= len(statement) or statement[after_alias] in ",);":
+        return True
+    next_token = _TABLE_IDENTIFIER_PATTERN.match(statement, after_alias)
+    return next_token is not None
+
+
+def _table_candidate_after(
+        statement: str, position: int, allow_parenthesis: bool = False
+        ) -> Optional[Tuple[str, int, int]]:
+    source_position = _skip_sql_noise(statement, position, len(statement))
+    parsed = _plain_table_span_after(
+        statement, source_position, allow_parenthesis,
+    )
+    if parsed is None:
+        return None
+    if not _source_suffix_is_complete(
+            statement, parsed[1], allow_parenthesis,
+    ):
+        return None
+    return parsed[0], source_position, parsed[1]
+
+
+def _tables_without_alias_paths(
+        statement: str, candidates: List[Tuple[str, int, int]]) -> Tuple[str, ...]:
+    aliases = set()
+    aliases.update(_nested_select_aliases(statement, 0, len(statement)))
+    for _name, _start, end in candidates:
+        alias = _table_alias_after(statement, end)
+        if alias is not None:
+            aliases.add(alias.casefold())
+
+    names = []
+    for name, _start, _end in candidates:
+        first_segment, separator, _rest = name.partition(".")
+        if (separator and first_segment.casefold() in aliases):
+            continue
+        names.append(name)
+    return _unique_tables(names)
+
+
+def _unique_tables(names: List[str]) -> Tuple[str, ...]:
+    seen = set()
+    result = []
+    for name in names:
+        key = name
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(name)
+    return tuple(result)
+
+
+def _skip_sql_comment(statement: str, position: int, limit: int) -> int:
+    if statement.startswith("--", position):
+        end = statement.find("\n", position + 2, limit)
+        return limit if end < 0 else end
+    if statement.startswith("/*", position):
+        end = statement.find("*/", position + 2, limit)
+        return limit if end < 0 else end + 2
+    return position
+
+
+def _skip_sql_noise(statement: str, position: int, limit: int) -> int:
+    while position < limit:
+        if statement[position].isspace():
+            position += 1
+            continue
+        next_position = _skip_sql_comment(statement, position, limit)
+        if next_position != position:
+            position = next_position
+            continue
+        break
+    return position
+
+
+def _skip_sql_quoted(statement: str, position: int, limit: int) -> int:
+    quote = statement[position]
+    closing = "]" if quote == "[" else quote
+    position += 1
+    while position < limit:
+        if statement[position] == closing:
+            if (closing != "]" and position + 1 < limit
+                    and statement[position + 1] == closing):
+                position += 2
+                continue
+            return position + 1
+        if statement[position] == "\\" and closing != "]":
+            position += 2
+        else:
+            position += 1
+    return limit
+
+
+def _balanced_parenthesis_end(statement: str, opening: int,
+                              limit: Optional[int] = None
+                              ) -> Optional[int]:
+    end = len(statement) if limit is None else min(limit, len(statement))
+    depth = 1
+    position = opening + 1
+    while position < end:
+        if statement.startswith("--", position) \
+                or statement.startswith("/*", position):
+            position = _skip_sql_comment(statement, position, end)
+            continue
+        if statement[position] in "'\"`[":
+            position = _skip_sql_quoted(statement, position, end)
+            continue
+        if statement[position] == "(":
+            depth += 1
+        elif statement[position] == ")":
+            depth -= 1
+            if depth == 0:
+                return position
+        position += 1
+    return None
+
+
+def _top_level_match(pattern: re.Pattern, statement: str, start: int,
+                     limit: int) -> Optional[re.Match]:
+    position = start
+    while position < limit:
+        if statement.startswith("--", position) \
+                or statement.startswith("/*", position):
+            position = _skip_sql_comment(statement, position, limit)
+            continue
+        if statement[position] in "'\"`[":
+            position = _skip_sql_quoted(statement, position, limit)
+            continue
+        if statement[position] == "(":
+            closing = _balanced_parenthesis_end(statement, position, limit)
+            if closing is None:
+                return None
+            position = closing + 1
+            continue
+        match = pattern.match(statement, position)
+        if match is not None:
+            return match
+        position += 1
+    return None
+
+
+def _nested_select_start(statement: str, opening: int,
+                         closing: int) -> Optional[int]:
+    position = _skip_sql_noise(statement, opening + 1, closing)
+    match = _SELECT_WORD.match(statement, position)
+    return None if match is None or match.end() > closing else match.end()
+
+
+def _nested_select_candidates(statement: str, start: int,
+                               limit: int
+                               ) -> Tuple[Tuple[str, int, int], ...]:
+    candidates = []
+    position = start
+    while position < limit:
+        if statement.startswith("--", position) \
+                or statement.startswith("/*", position):
+            position = _skip_sql_comment(statement, position, limit)
+            continue
+        if statement[position] in "'\"`[":
+            position = _skip_sql_quoted(statement, position, limit)
+            continue
+        if statement[position] != "(":
+            position += 1
+            continue
+        closing = _balanced_parenthesis_end(statement, position, limit)
+        if closing is None:
+            break
+        nested_start = _nested_select_start(statement, position, closing)
+        if nested_start is not None:
+            from_match = _top_level_match(
+                _FROM_WORD, statement, nested_start, closing,
+            )
+            if from_match is not None:
+                nested_candidates = _from_table_candidates(
+                    statement, from_match.end(), closing,
+                )
+                if nested_candidates is not None:
+                    candidates.extend(nested_candidates)
+        candidates.extend(_nested_select_candidates(
+            statement, position + 1, closing,
+        ))
+        position = closing + 1
+    return tuple(candidates)
+
+
+def _nested_select_aliases(statement: str, start: int,
+                           limit: int) -> Tuple[str, ...]:
+    aliases = []
+    position = start
+    while position < limit:
+        if statement.startswith("--", position) \
+                or statement.startswith("/*", position):
+            position = _skip_sql_comment(statement, position, limit)
+            continue
+        if statement[position] in "'\"`[":
+            position = _skip_sql_quoted(statement, position, limit)
+            continue
+        if statement[position] != "(":
+            position += 1
+            continue
+        closing = _balanced_parenthesis_end(statement, position, limit)
+        if closing is None:
+            break
+        nested_start = _nested_select_start(statement, position, closing)
+        if nested_start is not None:
+            alias = _table_alias_after(statement, closing + 1)
+            if alias is not None:
+                aliases.append(alias.casefold())
+        aliases.extend(_nested_select_aliases(
+            statement, position + 1, closing,
+        ))
+        position = closing + 1
+    return tuple(aliases)
+
+
+def _from_table_candidates(statement: str, position: int,
+                           limit: Optional[int] = None
+                           ) -> Optional[Tuple[Tuple[str, int, int], ...]]:
+    scan_end = len(statement) if limit is None else min(limit, len(statement))
+    first_position = _skip_sql_noise(statement, position, scan_end)
+
+    candidates = []
+    if (first_position < scan_end
+            and statement[first_position] == "("):
+        closing = _balanced_parenthesis_end(
+            statement, first_position, scan_end,
+        )
+        if closing is None:
+            return None
+        if (_nested_select_start(statement, first_position, closing) is None
+                and not _nested_select_candidates(
+                    statement, first_position + 1, closing,
+                )):
+            return None
+        position = closing + 1
+    else:
+        first = _table_candidate_after(statement, first_position)
+        if first is None:
+            return None
+        candidates.append(first)
+        position = first[2]
+
+    in_join_condition = False
+    while position < scan_end:
+        if statement.startswith("--", position) \
+                or statement.startswith("/*", position):
+            position = _skip_sql_comment(statement, position, scan_end)
+            continue
+        if statement[position] in "'\"`[":
+            position = _skip_sql_quoted(statement, position, scan_end)
+            continue
+        if statement[position] == "(":
+            closing = _balanced_parenthesis_end(statement, position, scan_end)
+            if closing is None:
+                break
+            position = closing + 1
+            continue
+        if statement[position] == ")":
+            break
+
+        control = _SOURCE_CONTROL.match(statement, position)
+        if control is None:
+            position += 1
+            continue
+        word = control.group(0).upper()
+        position = control.end()
+        if in_join_condition:
+            if word in _SOURCE_CLAUSES:
+                break
+            if word not in {"JOIN", ","}:
+                continue
+        elif word == "ON":
+            in_join_condition = True
+            continue
+        elif word in _SOURCE_CLAUSES:
+            break
+
+        source_position = _skip_sql_noise(statement, position, scan_end)
+        if (source_position < scan_end
+                and statement[source_position] == "("):
+            closing = _balanced_parenthesis_end(
+                statement, source_position, scan_end,
+            )
+            if closing is None:
+                break
+            if (_nested_select_start(statement, source_position, closing)
+                    is None
+                    and not _nested_select_candidates(
+                        statement, source_position + 1, closing,
+                    )):
+                break
+            position = closing + 1
+            in_join_condition = False
+            continue
+
+        next_source = _table_candidate_after(statement, source_position)
+        if next_source is None:
+            break
+        candidates.append(next_source)
+        position = next_source[2]
+        in_join_condition = False
+
+    return tuple(candidates)
+
+
+def _from_tables(statement: str, position: int,
+                 limit: Optional[int] = None,
+                 nested_start: int = 0) -> Tuple[str, ...]:
+    scan_end = len(statement) if limit is None else min(limit, len(statement))
+    candidates = _from_table_candidates(statement, position, scan_end)
+    if candidates is None:
+        return ()
+    candidates = list(candidates)
+    candidates.extend(_nested_select_candidates(
+        statement, nested_start, scan_end,
+    ))
+    candidates.sort(key=lambda candidate: candidate[1])
+    return _tables_without_alias_paths(statement, candidates)
+
+
+def tables(statement: str, verb: str) -> Tuple[str, ...]:
+    normalized_verb = verb.strip().lower()
+    if normalized_verb not in {"select", "delete", "insert", "update", "merge"}:
+        return ()
+
+    start = _statement_start(statement, normalized_verb)
+    if start is None:
+        return ()
+    if normalized_verb == "merge":
+        match = _top_level_match(_INTO_WORD, statement, start, len(statement))
+        if match is None:
+            return ()
+        target = _table_candidate_after(statement, match.end())
+        if target is None:
+            return ()
+        using = _top_level_match(
+            _USING_WORD, statement, match.end(), len(statement),
+        )
+        if using is None:
+            return _tables_without_alias_paths(statement, [target])
+        source = _table_candidate_after(statement, using.end())
+        candidates = [target] if source is None else [target, source]
+        return _tables_without_alias_paths(statement, candidates)
+    if normalized_verb == "update":
+        candidate = _table_candidate_after(statement, start)
+        return () if candidate is None else _tables_without_alias_paths(
+            statement, [candidate],
+        )
+    else:
+        required = _FROM_WORD if normalized_verb in {"select", "delete"} \
+            else _INTO_WORD
+        match = (_top_level_match(required, statement, start, len(statement))
+                 if normalized_verb in {"select", "delete", "insert"}
+                 else required.search(statement, start))
+        if (match is not None
+                and normalized_verb in {"select", "delete"}):
+            return _from_tables(
+                statement, match.end(), nested_start=start,
+            )
+        if (match is None
+                and normalized_verb in {"select", "delete"}):
+            candidates = list(_nested_select_candidates(
+                statement, start, len(statement),
+            ))
+            candidates.sort(key=lambda candidate: candidate[1])
+            return _tables_without_alias_paths(statement, candidates)
+        candidate = None if match is None else _table_candidate_after(
+            statement, match.end(), normalized_verb == "insert",
+        )
+        return () if candidate is None else _tables_without_alias_paths(
+            statement, [candidate],
+        )
+
+
 def extract(rel_path: str, language: str, text: str,
             symbols: List[Symbol]) -> List[SqlLiteral]:
     if language != "java":
