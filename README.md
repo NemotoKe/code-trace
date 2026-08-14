@@ -58,6 +58,21 @@ Results are ordered by distance and FQN. `--direct` keeps only types that name
 the queried type directly, and `--limit` keeps the nearest results. JSON always
 has `fqn`, `direct`, `count`, `truncated`, and `results` keys; no-match exits 0.
 
+Read callers and callees of a fully qualified method:
+
+```text
+python3 -m codewiki callers com.acme.OrderService.cancel --out .codewiki
+python3 -m codewiki callers com.acme.OrderService.cancel --out .codewiki --confirmed --direct
+python3 -m codewiki callees com.acme.OrderService.cancel --out .codewiki --json --limit 10
+```
+
+`callers` includes direct calls and calls that name a same-method ancestor;
+`--direct` keeps only the former and `--confirmed` removes possible and
+unresolved edges. `callees --confirmed` keeps only confirmed calls. Both
+commands apply `--limit` after filtering, report their direct/expanded or
+resolved/unresolved split, and return an empty result with status 0 when the
+method is not indexed.
+
 ## Determinism and schema
 
 Files and symbols are sorted before insertion, so logical rows and

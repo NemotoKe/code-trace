@@ -6,6 +6,8 @@ import os
 import sys
 
 from .index import pipeline
+from .query.calls import callees as query_callees
+from .query.calls import callers as query_callers
 from .query.symbols import QueryError, search_path
 from .query.types import TypeQueryError, resolve_type_path, subtypes
 
@@ -42,6 +44,19 @@ def _parser():
     impls.add_argument("--json", action="store_true")
     impls.add_argument("--direct", action="store_true")
     impls.add_argument("--limit", type=_nonnegative, default=None)
+    callers = commands.add_parser("callers")
+    callers.add_argument("fqn")
+    callers.add_argument("--out", default=None)
+    callers.add_argument("--json", action="store_true")
+    callers.add_argument("--limit", type=_nonnegative, default=None)
+    callers.add_argument("--confirmed", action="store_true")
+    callers.add_argument("--direct", action="store_true")
+    callees = commands.add_parser("callees")
+    callees.add_argument("fqn")
+    callees.add_argument("--out", default=None)
+    callees.add_argument("--json", action="store_true")
+    callees.add_argument("--limit", type=_nonnegative, default=None)
+    callees.add_argument("--confirmed", action="store_true")
     return parser
 
 
@@ -178,6 +193,84 @@ def _impls(args):
     return 0
 
 
+def _callers(args):
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    results = query_callers(
+        os.path.join(out, "index.sqlite3"), args.fqn
+    )
+    if args.confirmed:
+        results = [item for item in results if item.confidence == "CONFIRMED"]
+    if args.direct:
+        results = [item for item in results if item.via_fqn is None]
+    truncated = args.limit is not None and len(results) > max(0, args.limit)
+    if args.limit is not None:
+        results = results[:max(0, args.limit)]
+    direct = sum(item.via_fqn is None for item in results)
+    expanded = len(results) - direct
+    if args.json:
+        print(json.dumps({
+            "fqn": args.fqn,
+            "direct_only": args.direct,
+            "confirmed_only": args.confirmed,
+            "count": len(results),
+            "truncated": truncated,
+            "direct": direct,
+            "expanded": expanded,
+            "results": [item.as_dict() for item in results],
+        }, ensure_ascii=False, separators=(",", ":")))
+        return 0
+    for item in results:
+        via = "  via " + item.via_fqn if item.via_fqn is not None else ""
+        print("%s  %s:%d  %s%s" % (
+            item.caller_fqn, item.path, item.line, item.confidence, via,
+        ))
+    if truncated:
+        print("truncated: limit reached")
+    print("%d callers (%d direct, %d via an overridden method)" % (
+        len(results), direct, expanded,
+    ))
+    return 0
+
+
+def _callees(args):
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    results = query_callees(
+        os.path.join(out, "index.sqlite3"), args.fqn
+    )
+    if args.confirmed:
+        results = [item for item in results if item.confidence == "CONFIRMED"]
+    truncated = args.limit is not None and len(results) > max(0, args.limit)
+    if args.limit is not None:
+        results = results[:max(0, args.limit)]
+    resolved = sum(item.target_fqn is not None for item in results)
+    unresolved = len(results) - resolved
+    if args.json:
+        print(json.dumps({
+            "fqn": args.fqn,
+            "confirmed_only": args.confirmed,
+            "count": len(results),
+            "truncated": truncated,
+            "resolved": resolved,
+            "unresolved": unresolved,
+            "results": [item.as_dict() for item in results],
+        }, ensure_ascii=False, separators=(",", ":")))
+        return 0
+    for item in results:
+        called = (
+            item.receiver + "." + item.name
+            if item.receiver is not None else item.name
+        )
+        print("%d  %-8s  %-19s%s  %s" % (
+            item.line, item.form, called, item.confidence, item.reason,
+        ))
+    if truncated:
+        print("truncated: limit reached")
+    print("%d callees (%d resolved, %d unresolved)" % (
+        len(results), resolved, unresolved,
+    ))
+    return 0
+
+
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
@@ -190,6 +283,10 @@ def main(argv=None):
             return _symbol(args)
         if args.command == "impls":
             return _impls(args)
+        if args.command == "callers":
+            return _callers(args)
+        if args.command == "callees":
+            return _callees(args)
         return _resolve_type(args)
     except (OSError, QueryError, TypeQueryError, RuntimeError, ValueError) as exc:
         message = str(exc)
