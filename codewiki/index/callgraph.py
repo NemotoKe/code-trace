@@ -173,6 +173,23 @@ def iter_ancestors(
         frontier = next_frontier
 
 
+def _inherited_field_declaration(
+    site: CallSite,
+    types: Sequence[TypeInfo],
+    fields_by_owner: Mapping[str, Sequence[Declaration]],
+    supertypes_by_owner: Mapping[str, Tuple[str, ...]],
+) -> Optional[Declaration]:
+    type_index = _type_index(types)
+    current_type = _enclosing_type(site, type_index)
+    if current_type is None:
+        return None
+    for ancestor_fqn in iter_ancestors(current_type.fqn, supertypes_by_owner):
+        for declaration in fields_by_owner.get(ancestor_fqn, ()):
+            if declaration.name == site.receiver:
+                return declaration
+    return None
+
+
 def _matching_members(site: CallSite, owner_fqn: str,
                       members_by_owner: Mapping[str, Sequence[Symbol]]) -> List[Symbol]:
     return [
@@ -206,6 +223,7 @@ def resolve_receiver_call(
     lookup: ResolutionIndex,
     members_by_owner: Mapping[str, Sequence[Symbol]],
     supertypes_by_owner: Optional[Mapping[str, Tuple[str, ...]]] = None,
+    fields_by_owner: Optional[Mapping[str, Sequence[Declaration]]] = None,
 ) -> CallResolution:
     """Resolve one receiver-form call through the variable visible at its site."""
     if site.form != "receiver":
@@ -213,8 +231,15 @@ def resolve_receiver_call(
     supertype_map = (
         supertypes_by_owner if supertypes_by_owner is not None else {}
     )
+    field_map = fields_by_owner if fields_by_owner is not None else {}
 
     declaration = _visible_declaration(site, declarations, types)
+    inherited_field = False
+    if declaration is None:
+        declaration = _inherited_field_declaration(
+            site, types, field_map, supertype_map,
+        )
+        inherited_field = declaration is not None
     if declaration is None:
         type_resolution = resolve_type(
             site.path, site.receiver, file_packages, types,
@@ -252,12 +277,17 @@ def resolve_receiver_call(
         return _result(site, None, (), "UNRESOLVED", "no_declaration")
 
     type_resolution = resolve_type(
-        site.path, declaration.type_name, file_packages, types,
+        declaration.path if inherited_field else site.path,
+        declaration.type_name, file_packages, types,
         imports_by_file, lookup,
     )
     owner_fqn = type_resolution.resolved_fqn
     if type_resolution.outcome != "resolved" or owner_fqn is None:
-        return _result(site, None, (), "UNRESOLVED", "type_unresolved")
+        return _result(
+            site, None, (), "UNRESOLVED",
+            "inherited_field_type_unresolved"
+            if inherited_field else "type_unresolved",
+        )
 
     members, inherited = _members_with_inheritance(
         site, owner_fqn, members_by_owner, supertype_map,
@@ -266,11 +296,20 @@ def resolve_receiver_call(
     if len(members) == 1:
         return _result(
             site, owner_fqn, targets, "CONFIRMED",
-            "inherited_single_member" if inherited else "single_member",
+            "inherited_field_single_member"
+            if inherited_field else (
+                "inherited_single_member" if inherited else "single_member"
+            ),
         )
     if len(members) > 1:
         return _result(
             site, owner_fqn, targets, "POSSIBLE",
-            "inherited_overloaded" if inherited else "overloaded",
+            "inherited_field_overloaded"
+            if inherited_field else (
+                "inherited_overloaded" if inherited else "overloaded"
+            ),
         )
-    return _result(site, owner_fqn, (), "UNRESOLVED", "member_absent")
+    return _result(
+        site, owner_fqn, (), "UNRESOLVED",
+        "inherited_field_member_absent" if inherited_field else "member_absent",
+    )

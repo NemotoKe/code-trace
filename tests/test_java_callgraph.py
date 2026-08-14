@@ -8,6 +8,9 @@ class JavaCallGraphTests(unittest.TestCase):
     PATH = "src/Use.java"
 
     def _analyze(self, source):
+        return self._analyze_files(((self.PATH, source),))
+
+    def _analyze_files(self, files):
         from codewiki.index.calls import extract as extract_calls
         from codewiki.index.declarations import extract as extract_declarations
         from codewiki.index.imports import parse_imports
@@ -18,30 +21,46 @@ class JavaCallGraphTests(unittest.TestCase):
         from codewiki.index.symbols import extract as extract_symbols
         from codewiki.index.symbols import package_of
 
-        symbols = extract_symbols(self.PATH, "java", source)
-        declarations = extract_declarations(
-            self.PATH, "java", source, symbols
-        )
-        sites = extract_calls(self.PATH, "java", source, symbols)
-        file_packages = {self.PATH: package_of(source)}
-        imports_by_file = {self.PATH: parse_imports(self.PATH, source)}
-        types = type_infos(symbols)
+        all_symbols = []
+        declarations = []
+        sites = []
+        file_packages = {}
+        imports_by_file = {}
+        for path, source in files:
+            symbols = extract_symbols(path, "java", source)
+            all_symbols.extend(symbols)
+            declarations.extend(
+                extract_declarations(path, "java", source, symbols)
+            )
+            sites.extend(extract_calls(path, "java", source, symbols))
+            file_packages[path] = package_of(source)
+            imports_by_file[path] = parse_imports(path, source)
+
+        types = type_infos(all_symbols)
         lookup = build_lookup(
             types,
             file_packages.values(),
             analyzable_packages=file_packages.values(),
         )
         supertypes_by_owner = defaultdict(list)
-        for ref in extract_supertypes(self.PATH, "java", source, symbols):
-            resolved = resolve_supertype(
-                ref, file_packages, types, imports_by_file, lookup=lookup,
-            )
-            if resolved.outcome == "resolved" and resolved.resolved_fqn is not None:
-                supertypes_by_owner[ref.owner_fqn].append(resolved.resolved_fqn)
+        for path, source in files:
+            symbols = [item for item in all_symbols if item.path == path]
+            for ref in extract_supertypes(path, "java", source, symbols):
+                resolved = resolve_supertype(
+                    ref, file_packages, types, imports_by_file, lookup=lookup,
+                )
+                if resolved.outcome == "resolved" and resolved.resolved_fqn is not None:
+                    supertypes_by_owner[ref.owner_fqn].append(
+                        resolved.resolved_fqn
+                    )
         members_by_owner = defaultdict(list)
-        for symbol in symbols:
+        fields_by_owner = defaultdict(list)
+        for symbol in all_symbols:
             if symbol.owner_fqn and symbol.kind == "method":
                 members_by_owner[symbol.owner_fqn].append(symbol)
+        for declaration in declarations:
+            if declaration.kind == "field":
+                fields_by_owner[declaration.scope_fqn].append(declaration)
         return (
             sites,
             declarations,
@@ -50,6 +69,7 @@ class JavaCallGraphTests(unittest.TestCase):
             imports_by_file,
             lookup,
             dict(members_by_owner),
+            dict(fields_by_owner),
             {
                 owner: tuple(ancestors)
                 for owner, ancestors in supertypes_by_owner.items()
@@ -57,6 +77,9 @@ class JavaCallGraphTests(unittest.TestCase):
         )
 
     def _resolve_receivers(self, source):
+        return self._resolve_files(((self.PATH, source),))
+
+    def _resolve_files(self, files):
         from codewiki.index.callgraph import resolve_receiver_call
 
         (
@@ -67,8 +90,9 @@ class JavaCallGraphTests(unittest.TestCase):
             imports_by_file,
             lookup,
             members_by_owner,
+            fields_by_owner,
             supertypes_by_owner,
-        ) = self._analyze(source)
+        ) = self._analyze_files(files)
         resolved = []
         for site in sites:
             if site.form != "receiver":
@@ -76,9 +100,320 @@ class JavaCallGraphTests(unittest.TestCase):
             resolved.append(resolve_receiver_call(
                 site, declarations, file_packages, types,
                 imports_by_file, lookup, members_by_owner,
-                supertypes_by_owner,
+                supertypes_by_owner, fields_by_owner,
             ))
         return resolved, declarations
+
+    def test_local_shadows_inherited_field(self):
+        files = (
+            (
+                "src/p/A.java",
+                "package p;\n"
+                "class A { BaseDao dao; }\n",
+            ),
+            (
+                "src/p/B.java",
+                "package p;\n"
+                "class B extends A {\n"
+                "    void run() {\n"
+                "        LocalDao dao = null;\n"
+                "        dao.save();\n"
+                "    }\n"
+                "}\n",
+            ),
+            (
+                "src/p/BaseDao.java",
+                "package p;\n"
+                "class BaseDao { void save() {} }\n",
+            ),
+            (
+                "src/p/LocalDao.java",
+                "package p;\n"
+                "class LocalDao { void save() {} }\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            ("p.LocalDao", ("p.LocalDao.save",), "single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_nearer_field_wins_over_inherited_field(self):
+        files = (
+            (
+                "src/p/A.java",
+                "package p;\n"
+                "class A { BaseDao dao; }\n",
+            ),
+            (
+                "src/p/B.java",
+                "package p;\n"
+                "class B extends A {\n"
+                "    ChildDao dao;\n"
+                "    void run() { dao.save(); }\n"
+                "}\n",
+            ),
+            (
+                "src/p/BaseDao.java",
+                "package p;\n"
+                "class BaseDao { void save() {} }\n",
+            ),
+            (
+                "src/p/ChildDao.java",
+                "package p;\n"
+                "class ChildDao { void save() {} }\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            ("p.ChildDao", ("p.ChildDao.save",), "single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_inherited_field_resolves_from_another_file(self):
+        files = (
+            (
+                "src/base/A.java",
+                "package base;\n"
+                "import dep.Dao;\n"
+                "public class A { Dao dao; }\n",
+            ),
+            (
+                "src/sub/B.java",
+                "package sub;\n"
+                "import base.A;\n"
+                "public class B extends A {\n"
+                "    void run() { dao.save(); }\n"
+                "}\n",
+            ),
+            (
+                "src/dep/Dao.java",
+                "package dep;\n"
+                "public class Dao { void save() {} }\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            ("dep.Dao", ("dep.Dao.save",), "CONFIRMED", "inherited_field_single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_nearest_ancestor_field_level_wins_without_merging(self):
+        files = (
+            (
+                "src/p/Grand.java",
+                "package p;\n"
+                "class Grand { GrandDao dao; }\n",
+            ),
+            (
+                "src/p/A.java",
+                "package p;\n"
+                "class A extends Grand { BaseDao dao; }\n",
+            ),
+            (
+                "src/p/B.java",
+                "package p;\n"
+                "class B extends A { void run() { dao.save(); } }\n",
+            ),
+            (
+                "src/p/BaseDao.java",
+                "package p;\n"
+                "class BaseDao { void save() {} }\n",
+            ),
+            (
+                "src/p/GrandDao.java",
+                "package p;\n"
+                "class GrandDao { void save() {} }\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            ("p.BaseDao", ("p.BaseDao.save",), "inherited_field_single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_inherited_field_with_overloaded_member_is_possible(self):
+        files = (
+            (
+                "src/p/A.java",
+                "package p;\n"
+                "class A { Dao dao; }\n",
+            ),
+            (
+                "src/p/B.java",
+                "package p;\n"
+                "class B extends A { void run() { dao.save(); } }\n",
+            ),
+            (
+                "src/p/Dao.java",
+                "package p;\n"
+                "class Dao {\n"
+                "    void save() {}\n"
+                "    void save(int value) {}\n"
+                "}\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            ("p.Dao", ("p.Dao.save",), "POSSIBLE", "inherited_field_overloaded"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_inherited_field_with_absent_member_is_unresolved(self):
+        files = (
+            (
+                "src/p/A.java",
+                "package p;\n"
+                "class A { Dao dao; }\n",
+            ),
+            (
+                "src/p/B.java",
+                "package p;\n"
+                "class B extends A { void run() { dao.missing(); } }\n",
+            ),
+            (
+                "src/p/Dao.java",
+                "package p;\n"
+                "class Dao { void save() {} }\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            ("p.Dao", (), "UNRESOLVED", "inherited_field_member_absent"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_inherited_field_with_unresolved_type_is_unresolved(self):
+        files = (
+            (
+                "src/p/A.java",
+                "package p;\n"
+                "class A { MissingDao dao; }\n",
+            ),
+            (
+                "src/p/B.java",
+                "package p;\n"
+                "class B extends A { void run() { dao.save(); } }\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "inherited_field_type_unresolved"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_no_ancestor_field_stays_no_declaration(self):
+        files = (
+            (
+                "src/p/A.java",
+                "package p;\n"
+                "class A {}\n",
+            ),
+            (
+                "src/p/B.java",
+                "package p;\n"
+                "class B extends A { void run() { dao.save(); } }\n",
+            ),
+            (
+                "src/p/Dao.java",
+                "package p;\n"
+                "class Dao { void save() {} }\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "no_declaration"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_inherited_field_type_uses_inherited_member_walk(self):
+        files = (
+            (
+                "src/p/A.java",
+                "package p;\n"
+                "class A { Dao dao; }\n",
+            ),
+            (
+                "src/p/B.java",
+                "package p;\n"
+                "class B extends A { void run() { dao.save(); } }\n",
+            ),
+            (
+                "src/p/Dao.java",
+                "package p;\n"
+                "class Dao extends BaseDao {}\n",
+            ),
+            (
+                "src/p/BaseDao.java",
+                "package p;\n"
+                "class BaseDao { void save() {} }\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            ("p.Dao", ("p.BaseDao.save",), "CONFIRMED", "inherited_field_single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
 
     def test_field_then_local_shadowing_chooses_the_visible_declaration(self):
         source = (
@@ -165,6 +500,7 @@ class JavaCallGraphTests(unittest.TestCase):
             imports_by_file,
             lookup,
             members_by_owner,
+            _fields_by_owner,
             _supertypes_by_owner,
         ) = self._analyze(source)
         site = CallSite(
@@ -201,6 +537,7 @@ class JavaCallGraphTests(unittest.TestCase):
             imports_by_file,
             lookup,
             members_by_owner,
+            _fields_by_owner,
             _supertypes_by_owner,
         ) = self._analyze(source)
         site = next(item for item in sites if item.form == "receiver")
