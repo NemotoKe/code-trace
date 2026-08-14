@@ -89,10 +89,26 @@ CREATE TABLE IF NOT EXISTS calls (
     candidates TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sql_accesses (
+    access_id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    method_fqn TEXT NOT NULL,
+    method_kind TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    verb TEXT NOT NULL CHECK(verb IN ('select', 'insert', 'update', 'delete', 'merge')),
+    table_name TEXT NOT NULL,
+    table_key TEXT NOT NULL,
+    access TEXT NOT NULL CHECK(access IN ('READ', 'WRITE')),
+    statement TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_fqn);
 CREATE INDEX IF NOT EXISTS idx_calls_target ON calls(target_fqn);
 CREATE INDEX IF NOT EXISTS idx_calls_name ON calls(name);
 CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_id);
+CREATE INDEX IF NOT EXISTS idx_sql_accesses_table ON sql_accesses(table_key);
+CREATE INDEX IF NOT EXISTS idx_sql_accesses_method ON sql_accesses(method_fqn);
+CREATE INDEX IF NOT EXISTS idx_sql_accesses_file ON sql_accesses(file_id);
 
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_fqn ON symbols(fqn);

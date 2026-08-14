@@ -11,7 +11,7 @@ from ..config import Config
 from ..store import db
 from . import callgraph, calls, declarations
 from . import imports as java_imports
-from . import resolution, scan, supertypes, symbols
+from . import resolution, scan, sql, supertypes, symbols
 
 
 def _analyze_java_file(item):
@@ -19,18 +19,19 @@ def _analyze_java_file(item):
     try:
         text = scan.read_text(root, path)
     except OSError:
-        return path, None, [], [], [], [], []
+        return path, None, [], [], [], [], [], []
     package = symbols.package_of(text)
     if is_generated:
-        return path, package, [], [], [], [], []
+        return path, package, [], [], [], [], [], []
     file_symbols = symbols.extract(path, language, text)
     file_calls = calls.extract(path, language, text, file_symbols)
     file_declarations = declarations.extract(path, language, text, file_symbols)
     file_imports = java_imports.parse_imports(path, text)
     file_supertypes = supertypes.extract(path, language, text, file_symbols)
+    file_sql_statements = sql.extract(path, language, text, file_symbols)
     return (
         path, package, file_symbols, file_imports, file_supertypes,
-        file_calls, file_declarations,
+        file_calls, file_declarations, file_sql_statements,
     )
 
 
@@ -55,6 +56,8 @@ class PipelineResult:
     call_forms: Dict[str, int] = None
     call_confidences: Dict[str, int] = None
     call_resolution_rate: float = 0.0
+    sql_statements_found: int = 0
+    sql_access_rows: int = 0
 
 
 def run(root: str, out_dir: str, config: Optional[Config] = None,
@@ -86,19 +89,22 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         analyses = mapper.map(_analyze_java_file, analysis_items)
         extracted = []
         call_sites = []
+        sql_statements = []
         declaration_rows = []
         parsed_imports = []
         supertype_refs = {}
         packages = {}
         for (
             path, package, file_symbols, file_imports, file_refs,
-            file_calls, file_declarations,
+            file_calls, file_declarations, file_sql_statements,
         ) in analyses:
             packages[path] = package
             if file_symbols:
                 extracted.extend(file_symbols)
             if file_calls:
                 call_sites.extend(file_calls)
+            if file_sql_statements:
+                sql_statements.extend(file_sql_statements)
             if file_declarations:
                 declaration_rows.extend(file_declarations)
             if path in analyzable_paths:
@@ -109,6 +115,11 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         del analysis_items
         del java_records
         del analyzable_paths
+
+    sql_accesses = []
+    for statement in sql_statements:
+        for access in sql.table_accesses(statement.statement, statement.verb):
+            sql_accesses.append((statement, access))
 
     for record in records:
         if record.language == "java":
@@ -263,6 +274,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         imports=import_rows, resolutions=resolution_rows,
         supertypes=supertype_rows,
         calls=call_rows,
+        sql_accesses=sql_accesses,
     )
     now = time.perf_counter()
     timings["persist"] = round(now - previous, 3)
@@ -274,4 +286,5 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         import_outcomes, internal_rate, len(supertype_rows),
         supertype_outcomes, supertype_rate, len(call_sites), call_row_count,
         call_forms, call_confidences, call_resolution_rate,
+        len(sql_statements), len(sql_accesses),
     )
