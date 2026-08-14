@@ -631,6 +631,143 @@ class JavaCallGraphTests(unittest.TestCase):
             ),
         )
 
+    def test_qualified_declared_type_resolves_to_indexed_fqn(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(p.Dao dao) { dao.save(); } }\n"
+            "class Dao { void save() {} }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.Dao", ("p.Dao.save",), "CONFIRMED", "single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_qualified_nested_declared_type_resolves_through_inherited_field(self):
+        files = (
+            (
+                "src/base/A.java",
+                "package base;\n"
+                "import dep.Bundle;\n"
+                "class A { Bundle.BundleEntryComponent entry; }\n",
+            ),
+            (
+                "src/sub/B.java",
+                "package sub;\n"
+                "import base.A;\n"
+                "class B extends A { void run() { entry.save(); } }\n",
+            ),
+            (
+                "src/dep/Bundle.java",
+                "package dep;\n"
+                "class Bundle {\n"
+                "    class BundleEntryComponent { void save() {} }\n"
+                "}\n",
+            ),
+        )
+
+        resolutions, _declarations = self._resolve_files(files)
+
+        self.assertEqual(
+            (
+                "dep.Bundle.BundleEntryComponent",
+                ("dep.Bundle.BundleEntryComponent.save",),
+                "CONFIRMED",
+                "inherited_field_single_member",
+            ),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_qualified_external_declared_type_stays_type_unresolved(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(java.util.Map map) { map.get(); } }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "type_unresolved"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_unknown_qualified_declared_type_stays_type_unresolved(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(Unknown.Thing thing) { thing.save(); } }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "type_unresolved"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_simple_declared_type_keeps_existing_resolution(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(Dao dao) { dao.save(); } }\n"
+            "class Dao { void save() {} }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.Dao", ("p.Dao.save",), "CONFIRMED", "single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_qualified_array_declared_type_does_not_resolve_to_element_type(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(p.Dao[] dao) { dao.save(); } }\n"
+            "class Dao { void save() {} }\n"
+        )
+
+        resolutions, declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ["p.Dao[]"],
+            [item.type_name for item in declarations if item.name == "dao"],
+        )
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "type_unresolved"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
     def test_overloaded_members_are_possible_with_distinct_targets(self):
         source = (
             "package p;\n"

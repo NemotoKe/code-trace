@@ -282,6 +282,45 @@ def resolve_type(
     return _unresolved(file_path, name, None, [])
 
 
+def resolve_type_reference(
+    file_path: str,
+    name: str,
+    file_packages: Dict[str, Optional[str]],
+    types: Sequence[TypeInfo],
+    imports_by_file: Dict[str, Sequence],
+    lookup: Optional[ResolutionIndex] = None,
+    prepared_imports: Optional[_FileImports] = None,
+) -> TypeResolution:
+    """Resolve a written type reference, including an indexed qualified FQN."""
+    lookup = lookup or build_lookup(types, file_packages.values())
+    if "." not in name:
+        return resolve_type(
+            file_path, name, file_packages, types, imports_by_file,
+            lookup, prepared_imports,
+        )
+    if name in lookup.internal:
+        return TypeResolution(
+            file_path, name, name, 5, "resolved", [name]
+        )
+    outer_name, rest = name.split(".", 1)
+    outer = resolve_type(
+        file_path, outer_name, file_packages, types, imports_by_file,
+        lookup, prepared_imports,
+    )
+    if outer.outcome == "resolved" and outer.resolved_fqn:
+        candidate = outer.resolved_fqn + "." + rest
+        if (candidate in lookup.internal and
+                outer.resolved_fqn in lookup.owners_by_fqn.get(candidate, ())):
+            return TypeResolution(
+                file_path, name, candidate, 6, "resolved", [candidate]
+            )
+        return _classify_candidates(file_path, name, [candidate], lookup, 6)
+    if outer.candidates:
+        candidates = [candidate + "." + rest for candidate in outer.candidates]
+        return _classify_candidates(file_path, name, candidates, lookup, 6)
+    return _classify_candidates(file_path, name, [name], lookup)
+
+
 def resolve_supertype(
     ref,
     file_packages: Dict[str, Optional[str]],
@@ -292,32 +331,10 @@ def resolve_supertype(
 ) -> TypeResolution:
     """Resolve a supertype reference, including qualified Java type names."""
     lookup = lookup or build_lookup(types, file_packages.values())
-    if "." not in ref.name:
-        return resolve_type(
-            ref.path, ref.name, file_packages, types, imports_by_file,
-            lookup, prepared_imports,
-        )
-    if ref.name in lookup.internal:
-        return TypeResolution(
-            ref.path, ref.name, ref.name, 5, "resolved", [ref.name]
-        )
-    outer_name, rest = ref.name.split(".", 1)
-    outer = resolve_type(
-        ref.path, outer_name, file_packages, types, imports_by_file,
+    return resolve_type_reference(
+        ref.path, ref.name, file_packages, types, imports_by_file,
         lookup, prepared_imports,
     )
-    if outer.outcome == "resolved" and outer.resolved_fqn:
-        candidate = outer.resolved_fqn + "." + rest
-        if (candidate in lookup.internal and
-                outer.resolved_fqn in lookup.owners_by_fqn.get(candidate, ())):
-            return TypeResolution(
-                ref.path, ref.name, candidate, 6, "resolved", [candidate]
-            )
-        return _classify_candidates(ref.path, ref.name, [candidate], lookup, 6)
-    if outer.candidates:
-        candidates = [candidate + "." + rest for candidate in outer.candidates]
-        return _classify_candidates(ref.path, ref.name, candidates, lookup, 6)
-    return _classify_candidates(ref.path, ref.name, [ref.name], lookup)
 
 
 def resolve_import(record, types: Sequence[TypeInfo], packages: Iterable = (),

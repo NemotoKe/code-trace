@@ -6,7 +6,9 @@ from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .calls import CallSite
 from .declarations import Declaration
-from .resolution import ResolutionIndex, TypeInfo, resolve_type
+from .resolution import (
+    ResolutionIndex, TypeInfo, resolve_type, resolve_type_reference,
+)
 from .symbols import Symbol
 
 
@@ -287,7 +289,7 @@ def resolve_receiver_call(
             )
         return _result(site, None, (), "UNRESOLVED", "no_declaration")
 
-    type_resolution = resolve_type(
+    type_resolution = resolve_type_reference(
         declaration.path if inherited_field else site.path,
         declaration.type_name, file_packages, types,
         imports_by_file, lookup,
