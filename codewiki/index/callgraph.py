@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .calls import CallSite
 from .declarations import Declaration
@@ -155,12 +155,46 @@ def _visible_declaration(site: CallSite, declarations: Sequence[Declaration],
     return None
 
 
+def iter_ancestors(
+    type_fqn: str,
+    supertypes_by_owner: Mapping[str, Tuple[str, ...]],
+) -> Iterator[str]:
+    """Yield resolved supertypes breadth first, stopping at cycles."""
+    visited = {type_fqn}
+    frontier = list(supertypes_by_owner.get(type_fqn, ()))
+    while frontier:
+        next_frontier = []
+        for ancestor_fqn in frontier:
+            if ancestor_fqn in visited:
+                continue
+            visited.add(ancestor_fqn)
+            yield ancestor_fqn
+            next_frontier.extend(supertypes_by_owner.get(ancestor_fqn, ()))
+        frontier = next_frontier
+
+
 def _matching_members(site: CallSite, owner_fqn: str,
                       members_by_owner: Mapping[str, Sequence[Symbol]]) -> List[Symbol]:
     return [
         symbol for symbol in members_by_owner.get(owner_fqn, ())
         if symbol.kind == "method" and symbol.name == site.name
     ]
+
+
+def _members_with_inheritance(
+    site: CallSite,
+    owner_fqn: str,
+    members_by_owner: Mapping[str, Sequence[Symbol]],
+    supertypes_by_owner: Mapping[str, Tuple[str, ...]],
+) -> Tuple[List[Symbol], bool]:
+    members = _matching_members(site, owner_fqn, members_by_owner)
+    if members:
+        return members, False
+    for ancestor_fqn in iter_ancestors(owner_fqn, supertypes_by_owner):
+        members = _matching_members(site, ancestor_fqn, members_by_owner)
+        if members:
+            return members, True
+    return [], False
 
 
 def resolve_receiver_call(
@@ -171,10 +205,14 @@ def resolve_receiver_call(
     imports_by_file: Dict[str, Sequence],
     lookup: ResolutionIndex,
     members_by_owner: Mapping[str, Sequence[Symbol]],
+    supertypes_by_owner: Optional[Mapping[str, Tuple[str, ...]]] = None,
 ) -> CallResolution:
     """Resolve one receiver-form call through the variable visible at its site."""
     if site.form != "receiver":
         return _result(site, None, (), "UNRESOLVED", "no_declaration")
+    supertype_map = (
+        supertypes_by_owner if supertypes_by_owner is not None else {}
+    )
 
     declaration = _visible_declaration(site, declarations, types)
     if declaration is None:
@@ -184,17 +222,23 @@ def resolve_receiver_call(
         )
         owner_fqn = type_resolution.resolved_fqn
         if type_resolution.outcome == "resolved" and owner_fqn is not None:
-            members = _matching_members(site, owner_fqn, members_by_owner)
+            members, inherited = _members_with_inheritance(
+                site, owner_fqn, members_by_owner, supertype_map,
+            )
             targets = sorted(set(member.fqn for member in members))
             if len(members) == 1:
                 return _result(
                     site, owner_fqn, targets,
-                    "CONFIRMED", "static_single_member",
+                    "CONFIRMED",
+                    "static_inherited_single_member"
+                    if inherited else "static_single_member",
                 )
             if len(members) > 1:
                 return _result(
                     site, owner_fqn, targets,
-                    "POSSIBLE", "static_overloaded",
+                    "POSSIBLE",
+                    "static_inherited_overloaded"
+                    if inherited else "static_overloaded",
                 )
             return _result(
                 site, owner_fqn, (),
@@ -215,10 +259,18 @@ def resolve_receiver_call(
     if type_resolution.outcome != "resolved" or owner_fqn is None:
         return _result(site, None, (), "UNRESOLVED", "type_unresolved")
 
-    members = _matching_members(site, owner_fqn, members_by_owner)
+    members, inherited = _members_with_inheritance(
+        site, owner_fqn, members_by_owner, supertype_map,
+    )
     targets = sorted(set(member.fqn for member in members))
     if len(members) == 1:
-        return _result(site, owner_fqn, targets, "CONFIRMED", "single_member")
+        return _result(
+            site, owner_fqn, targets, "CONFIRMED",
+            "inherited_single_member" if inherited else "single_member",
+        )
     if len(members) > 1:
-        return _result(site, owner_fqn, targets, "POSSIBLE", "overloaded")
+        return _result(
+            site, owner_fqn, targets, "POSSIBLE",
+            "inherited_overloaded" if inherited else "overloaded",
+        )
     return _result(site, owner_fqn, (), "UNRESOLVED", "member_absent")

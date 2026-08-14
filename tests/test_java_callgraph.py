@@ -11,7 +11,10 @@ class JavaCallGraphTests(unittest.TestCase):
         from codewiki.index.calls import extract as extract_calls
         from codewiki.index.declarations import extract as extract_declarations
         from codewiki.index.imports import parse_imports
-        from codewiki.index.resolution import build_lookup, type_infos
+        from codewiki.index.resolution import (
+            build_lookup, resolve_supertype, type_infos,
+        )
+        from codewiki.index.supertypes import extract as extract_supertypes
         from codewiki.index.symbols import extract as extract_symbols
         from codewiki.index.symbols import package_of
 
@@ -28,6 +31,13 @@ class JavaCallGraphTests(unittest.TestCase):
             file_packages.values(),
             analyzable_packages=file_packages.values(),
         )
+        supertypes_by_owner = defaultdict(list)
+        for ref in extract_supertypes(self.PATH, "java", source, symbols):
+            resolved = resolve_supertype(
+                ref, file_packages, types, imports_by_file, lookup=lookup,
+            )
+            if resolved.outcome == "resolved" and resolved.resolved_fqn is not None:
+                supertypes_by_owner[ref.owner_fqn].append(resolved.resolved_fqn)
         members_by_owner = defaultdict(list)
         for symbol in symbols:
             if symbol.owner_fqn and symbol.kind == "method":
@@ -40,6 +50,10 @@ class JavaCallGraphTests(unittest.TestCase):
             imports_by_file,
             lookup,
             dict(members_by_owner),
+            {
+                owner: tuple(ancestors)
+                for owner, ancestors in supertypes_by_owner.items()
+            },
         )
 
     def _resolve_receivers(self, source):
@@ -53,6 +67,7 @@ class JavaCallGraphTests(unittest.TestCase):
             imports_by_file,
             lookup,
             members_by_owner,
+            supertypes_by_owner,
         ) = self._analyze(source)
         resolved = []
         for site in sites:
@@ -61,6 +76,7 @@ class JavaCallGraphTests(unittest.TestCase):
             resolved.append(resolve_receiver_call(
                 site, declarations, file_packages, types,
                 imports_by_file, lookup, members_by_owner,
+                supertypes_by_owner,
             ))
         return resolved, declarations
 
@@ -149,6 +165,7 @@ class JavaCallGraphTests(unittest.TestCase):
             imports_by_file,
             lookup,
             members_by_owner,
+            _supertypes_by_owner,
         ) = self._analyze(source)
         site = CallSite(
             self.PATH, "p.Caller.run", "method", 2,
@@ -184,6 +201,7 @@ class JavaCallGraphTests(unittest.TestCase):
             imports_by_file,
             lookup,
             members_by_owner,
+            _supertypes_by_owner,
         ) = self._analyze(source)
         site = next(item for item in sites if item.form == "receiver")
 
@@ -293,6 +311,94 @@ class JavaCallGraphTests(unittest.TestCase):
         self.assertEqual("POSSIBLE", resolutions[0].confidence)
         self.assertEqual("overloaded", resolutions[0].reason)
 
+    def test_inherited_single_member_is_confirmed(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(C value) { value.run(); } }\n"
+            "class A { void run() {} }\n"
+            "class B extends A {}\n"
+            "class C extends B {}\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.C", ("p.A.run",), "CONFIRMED", "inherited_single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_inherited_overloaded_members_are_possible_with_deduplicated_targets(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(B value) { value.run(); } }\n"
+            "class A {\n"
+            "    void run() {}\n"
+            "    void run(int value) {}\n"
+            "}\n"
+            "class B extends A {}\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.B", ("p.A.run",), "POSSIBLE", "inherited_overloaded"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_owner_override_wins_over_an_inherited_member(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(B value) { value.run(); } }\n"
+            "class A { void run() {} }\n"
+            "class B extends A { void run() {} }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.B", ("p.B.run",), "CONFIRMED", "single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_nearest_ancestor_level_wins_without_merging_candidates(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(C value) { value.run(); } }\n"
+            "class A { void run() {} }\n"
+            "class B extends A {\n"
+            "    void run() {}\n"
+            "    void run(int value) {}\n"
+            "}\n"
+            "class C extends B {}\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.C", ("p.B.run",), "POSSIBLE", "inherited_overloaded"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
     def test_resolved_owner_without_member_is_unresolved(self):
         source = (
             "package p;\n"
@@ -401,6 +507,84 @@ class JavaCallGraphTests(unittest.TestCase):
 
         self.assertEqual(
             ("p.helper", (), "UNRESOLVED", "static_member_absent"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_static_inherited_single_member_is_confirmed(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run() { B.help(); } }\n"
+            "class A { static void help() {} }\n"
+            "class B extends A {}\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.B", ("p.A.help",), "CONFIRMED", "static_inherited_single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_static_inherited_overloaded_members_are_possible_with_deduplicated_targets(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run() { B.help(); } }\n"
+            "class A {\n"
+            "    static void help() {}\n"
+            "    static void help(int value) {}\n"
+            "}\n"
+            "class B extends A {}\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.B", ("p.A.help",), "POSSIBLE", "static_inherited_overloaded"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_iter_ancestors_is_breadth_first_and_terminates_on_a_cycle(self):
+        from codewiki.index.callgraph import iter_ancestors
+
+        supertypes_by_owner = {
+            "p.Start": ("p.Left", "p.Right"),
+            "p.Left": ("p.Bottom",),
+            "p.Right": ("p.Bottom",),
+            "p.Bottom": ("p.Start",),
+        }
+
+        self.assertEqual(
+            ["p.Left", "p.Right", "p.Bottom"],
+            list(iter_ancestors("p.Start", supertypes_by_owner)),
+        )
+
+    def test_unresolved_supertype_edge_is_not_walked(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(B value) { value.run(); } }\n"
+            "class B extends Missing {}\n"
+            "class A { void run() {} }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.B", (), "UNRESOLVED", "member_absent"),
             (
                 resolutions[0].owner_fqn,
                 resolutions[0].targets,
