@@ -349,6 +349,135 @@ class JavaCallGraphTests(unittest.TestCase):
             ),
         )
 
+    def test_type_receiver_with_one_member_is_confirmed_as_static(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run() { helper.help(); } }\n"
+            "class helper { void help() {} }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.helper", ("p.helper.help",), "CONFIRMED", "static_single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_type_receiver_with_overloaded_members_is_possible(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run() { helper.help(); } }\n"
+            "class helper {\n"
+            "    void help() {}\n"
+            "    void help(int value) {}\n"
+            "}\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.helper", ("p.helper.help",), "POSSIBLE", "static_overloaded"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_type_receiver_without_member_is_unresolved(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run() { helper.missing(); } }\n"
+            "class helper { void help() {} }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.helper", (), "UNRESOLVED", "static_member_absent"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_external_type_receiver_is_not_internal(self):
+        source = (
+            "package p;\n"
+            "import java.util.Collections;\n"
+            "class Caller { void run() { Collections.emptyList(); } }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "receiver_not_internal"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_unknown_type_receiver_stays_no_declaration(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run() { Zzz.nothing(); } }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "no_declaration"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_visible_variable_shadows_type_receiver(self):
+        source = (
+            "package p;\n"
+            "class Holder { public static void help() {} }\n"
+            "class T {\n"
+            "    void m() {\n"
+            "        Holder Holder = null;\n"
+            "        Holder.help();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        resolutions, declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            [("local", "Holder")],
+            [
+                (item.kind, item.type_name)
+                for item in declarations
+                if item.name == "Holder"
+            ],
+        )
+        self.assertEqual(
+            ("p.Holder", ("p.Holder.help",), "CONFIRMED", "single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
     def test_imported_parameter_uses_combined_repository_lookup(self):
         from codewiki.index.callgraph import resolve_receiver_call
         from codewiki.index.calls import extract as extract_calls

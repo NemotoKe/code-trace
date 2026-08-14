@@ -178,6 +178,33 @@ def resolve_receiver_call(
 
     declaration = _visible_declaration(site, declarations, types)
     if declaration is None:
+        type_resolution = resolve_type(
+            site.path, site.receiver, file_packages, types,
+            imports_by_file, lookup,
+        )
+        owner_fqn = type_resolution.resolved_fqn
+        if type_resolution.outcome == "resolved" and owner_fqn is not None:
+            members = _matching_members(site, owner_fqn, members_by_owner)
+            targets = sorted(set(member.fqn for member in members))
+            if len(members) == 1:
+                return _result(
+                    site, owner_fqn, targets,
+                    "CONFIRMED", "static_single_member",
+                )
+            if len(members) > 1:
+                return _result(
+                    site, owner_fqn, targets,
+                    "POSSIBLE", "static_overloaded",
+                )
+            return _result(
+                site, owner_fqn, (),
+                "UNRESOLVED", "static_member_absent",
+            )
+        if type_resolution.outcome in ("external", "excluded"):
+            return _result(
+                site, None, (),
+                "UNRESOLVED", "receiver_not_internal",
+            )
         return _result(site, None, (), "UNRESOLVED", "no_declaration")
 
     type_resolution = resolve_type(
