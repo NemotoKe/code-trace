@@ -27,6 +27,14 @@ ENTRYPOINT_RULES = (
         reason_template="main_signature",
     ),
     _EntrypointRule(
+        kind="main",
+        type_marker=None,
+        method_names=("main",),
+        method_annotations=(),
+        parameter_types=("String...",),
+        reason_template="main_signature",
+    ),
+    _EntrypointRule(
         kind="servlet",
         type_marker=("supertype", "HttpServlet"),
         method_names=(

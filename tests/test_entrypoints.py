@@ -128,7 +128,7 @@ class EntrypointIntegrationTests(unittest.TestCase):
             [row[1] for row in rows],
         )
 
-    def test_main_signature_rejects_int_no_args_and_currently_rejects_varargs(self):
+    def test_main_signature_rejects_int_no_args_and_accepts_varargs(self):
         sources = {
             "src/entry/IntMain.java": (
                 "package entry;\n"
@@ -170,8 +170,16 @@ class EntrypointIntegrationTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual([], rows)
-        self.assertEqual(0, result.entrypoints_found)
+        self.assertEqual(
+            [
+                (
+                    "src/entry/VarargsMain.java", "entry.VarargsMain.main",
+                    "main", "main_signature", 4,
+                ),
+            ],
+            rows,
+        )
+        self.assertEqual(1, result.entrypoints_found)
 
     def test_external_httpservlet_marker_and_transitive_servlet_chain(self):
         sources = {
