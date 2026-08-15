@@ -73,6 +73,19 @@ class TraceQueryTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def _entrypoints(self, rows):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                "CREATE TABLE entrypoints(method_fqn TEXT NOT NULL, kind TEXT NOT NULL)"
+            )
+            connection.executemany(
+                "INSERT INTO entrypoints(method_fqn, kind) VALUES (?, ?)", rows
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     def test_chain_and_reconvergence_have_shortest_parents(self):
         self._method("p.Repo.repo", "src/p/Repo.java")
         self._method("p.Service.service", "src/p/Service.java")
@@ -160,6 +173,71 @@ class TraceQueryTests(unittest.TestCase):
         self.assertEqual([], nodes)
         self.assertFalse(truncated)
         self.assertEqual([], path_to(nodes, "p.Missing.missing"))
+
+    def test_entrypoints_among_returns_sorted_kinds_for_requested_fqns(self):
+        self._entrypoints(
+            [
+                ("p.Servlet.doPost", "servlet"),
+                ("p.Servlet.doPost", "jaxrs"),
+                ("p.Servlet.doPost", "servlet"),
+                ("p.Batch.main", "main"),
+            ]
+        )
+
+        from codewiki.query.trace import entrypoints_among
+
+        self.assertEqual(
+            {
+                "p.Batch.main": ("main",),
+                "p.Servlet.doPost": ("jaxrs", "servlet"),
+            },
+            entrypoints_among(
+                self.db_path,
+                [
+                    "p.Servlet.doPost",
+                    "p.Batch.main",
+                    "p.Servlet.doPost",
+                    "p.Missing.missing",
+                ],
+            ),
+        )
+
+    def test_entrypoints_among_chunks_large_requests_and_binds_fqns(self):
+        injected = "p.Bad'); DROP TABLE entrypoints; --"
+        fqns = ["p.Type%d.run" % index for index in range(1001)] + [injected]
+        self._entrypoints([(fqn, "main") for fqn in fqns])
+
+        from codewiki.query.trace import entrypoints_among
+
+        result = entrypoints_among(self.db_path, list(reversed(fqns)) + [injected])
+
+        self.assertEqual(
+            {fqn: ("main",) for fqn in fqns},
+            result,
+        )
+
+    def test_entrypoints_among_empty_input_does_not_require_table(self):
+        from codewiki.query.trace import entrypoints_among
+
+        self.assertEqual({}, entrypoints_among(self.db_path, []))
+
+    def test_entrypoints_among_wraps_missing_database_or_table_errors(self):
+        from codewiki.query.trace import TypeQueryError, entrypoints_among
+
+        with self.assertRaises(TypeQueryError) as missing_table:
+            entrypoints_among(self.db_path, ["p.Missing.missing"])
+        self.assertEqual(
+            "index database missing or stale; rerun index",
+            str(missing_table.exception),
+        )
+
+        missing_path = os.path.join(self.directory.name, "missing.sqlite3")
+        with self.assertRaises(TypeQueryError) as missing_database:
+            entrypoints_among(missing_path, ["p.Missing.missing"])
+        self.assertEqual(
+            "index database missing or stale; rerun index",
+            str(missing_database.exception),
+        )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
 
 from .index import pipeline
 from .query.calls import callees as query_callees
@@ -11,6 +12,11 @@ from .query.calls import callers as query_callers
 from .query.sql import column_accesses as query_column_accesses
 from .query.sql import accesses as query_accesses
 from .query.symbols import QueryError, search_path
+from .query.trace import (
+    callers_upward as query_callers_upward,
+    entrypoints_among as query_entrypoints_among,
+    path_to as trace_path_to,
+)
 from .query.types import TypeQueryError, resolve_type_path, subtypes
 
 
@@ -59,6 +65,13 @@ def _parser():
     callers.add_argument("--limit", type=_nonnegative, default=None)
     callers.add_argument("--confirmed", action="store_true")
     callers.add_argument("--direct", action="store_true")
+    trace_up = commands.add_parser("trace-up")
+    trace_up.add_argument("fqn")
+    trace_up.add_argument("--out", default=None)
+    trace_up.add_argument("--json", action="store_true")
+    trace_up.add_argument("--limit", type=_nonnegative, default=None)
+    trace_up.add_argument("--depth", type=_nonnegative, default=8)
+    trace_up.add_argument("--entrypoints", action="store_true")
     table = commands.add_parser("table")
     table.add_argument("table")
     table.add_argument("--out", default=None)
@@ -264,6 +277,107 @@ def _callers(args):
     return 0
 
 
+def _trace_up(args):
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    db_path = os.path.join(out, "index.sqlite3")
+    nodes, walker_truncated = query_callers_upward(
+        db_path, args.fqn, max_depth=args.depth
+    )
+
+    if args.entrypoints:
+        kinds_by_fqn = query_entrypoints_among(
+            db_path, [node.fqn for node in nodes]
+        )
+        records = []
+        for node in nodes:
+            for kind in kinds_by_fqn.get(node.fqn, ()):
+                records.append((node, kind))
+        records.sort(key=lambda item: (item[0].depth, item[0].fqn, item[1]))
+        has_entrypoint_matches = bool(records)
+
+        limit_truncated = (
+            args.limit is not None and len(records) > max(0, args.limit)
+        )
+        if args.limit is not None:
+            records = records[:max(0, args.limit)]
+
+        result_records = []
+        for node, kind in records:
+            chain_nodes = trace_path_to(nodes, node.fqn)
+            chain = [asdict(item) for item in chain_nodes]
+            chain.append({"fqn": args.fqn})
+            result = asdict(node)
+            result["kind"] = kind
+            result["chain"] = chain
+            result_records.append((node, kind, chain_nodes, result))
+
+        truncated = walker_truncated or limit_truncated
+        max_depth_reached = max(
+            (node.depth for node, _kind, _chain, _result in result_records),
+            default=0,
+        )
+        if args.json:
+            print(json.dumps({
+                "fqn": args.fqn,
+                "depth": args.depth,
+                "entrypoints_only": True,
+                "count": len(result_records),
+                "truncated": truncated,
+                "max_depth_reached": max_depth_reached,
+                "results": [result for _node, _kind, _chain, result in result_records],
+            }, ensure_ascii=False, separators=(",", ":")))
+            return 0
+        if not has_entrypoint_matches:
+            print("no entry point reaches %s" % args.fqn)
+            return 0
+        for node, kind, chain_nodes, _result in result_records:
+            print("%s  %s  %s:%d" % (
+                kind, node.fqn, node.path, node.line,
+            ))
+            for item in chain_nodes[1:]:
+                print("    -> %s  %s:%d  %s" % (
+                    item.fqn, item.path, item.line, item.confidence,
+                ))
+            print("    -> %s" % args.fqn)
+        if limit_truncated:
+            print("truncated: limit reached")
+        label = "entry point" if len(result_records) == 1 else "entry points"
+        verb = "reaches" if len(result_records) == 1 else "reach"
+        print("%d %s %s %s" % (
+            len(result_records), label, verb, args.fqn,
+        ))
+        return 0
+
+    limit_truncated = args.limit is not None and len(nodes) > max(0, args.limit)
+    if args.limit is not None:
+        nodes = nodes[:max(0, args.limit)]
+    truncated = walker_truncated or limit_truncated
+    max_depth_reached = max((node.depth for node in nodes), default=0)
+    if args.json:
+        print(json.dumps({
+            "fqn": args.fqn,
+            "depth": args.depth,
+            "entrypoints_only": False,
+            "count": len(nodes),
+            "truncated": truncated,
+            "max_depth_reached": max_depth_reached,
+            "results": [asdict(node) for node in nodes],
+        }, ensure_ascii=False, separators=(",", ":")))
+        return 0
+    for node in nodes:
+        print("%d  %s  %s:%d  %s" % (
+            node.depth, node.fqn, node.path, node.line, node.confidence,
+        ))
+    if limit_truncated:
+        print("truncated: limit reached")
+    label = "method" if len(nodes) == 1 else "methods"
+    verb = "reaches" if len(nodes) == 1 else "reach"
+    print("%d %s %s %s (max depth %d)" % (
+        len(nodes), label, verb, args.fqn, max_depth_reached,
+    ))
+    return 0
+
+
 def _table(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     results = query_accesses(
@@ -385,6 +499,8 @@ def main(argv=None):
             return _impls(args)
         if args.command == "callers":
             return _callers(args)
+        if args.command == "trace-up":
+            return _trace_up(args)
         if args.command == "table":
             return _table(args)
         if args.command == "column":
