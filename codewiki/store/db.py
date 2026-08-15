@@ -7,7 +7,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import List, Optional
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 _SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 _IMPORT_FORMS = ("single", "wildcard", "static_single", "static_wildcard")
 _IMPORT_OUTCOMES = ("resolved", "external", "unresolved", "excluded")
@@ -35,6 +35,9 @@ _INDEX_DEFINITIONS = (
     ("idx_annotations_simple_name", "annotations(simple_name)"),
     ("idx_annotations_owner", "annotations(owner_fqn)"),
     ("idx_annotations_file", "annotations(file_id)"),
+    ("idx_entrypoints_method", "entrypoints(method_fqn)"),
+    ("idx_entrypoints_kind", "entrypoints(kind)"),
+    ("idx_entrypoints_file", "entrypoints(file_id)"),
 )
 
 
@@ -74,7 +77,7 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
                 parallel_jobs: Optional[int] = None, imports=None,
                 resolutions=None, supertypes=None, calls=None,
                 sql_accesses=None, sql_column_accesses=None,
-                annotations=None) -> None:
+                annotations=None, entrypoints=None) -> None:
     """Write a complete fresh index with IDs assigned from sorted input rows."""
     parent = os.path.dirname(os.path.abspath(db_path))
     if not os.path.isdir(parent):
@@ -120,6 +123,7 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
         sql_accesses = list(sql_accesses or [])
         sql_column_accesses = list(sql_column_accesses or [])
         annotations = list(annotations or [])
+        entrypoints = list(entrypoints or [])
         import_forms = {form: 0 for form in _IMPORT_FORMS}
         import_outcomes = {outcome: 0 for outcome in _IMPORT_OUTCOMES}
         for record, resolution in imports:
@@ -404,6 +408,28 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
             (
                 annotation_row(annotation)
                 for annotation in sorted(annotations, key=annotation_sort_key)
+            )
+        )
+
+        def entrypoint_row(entrypoint):
+            return (
+                file_ids[entrypoint.path], entrypoint.method_fqn,
+                entrypoint.owner_fqn, entrypoint.kind, entrypoint.reason,
+                entrypoint.line,
+            )
+
+        def entrypoint_sort_key(entrypoint):
+            return (
+                entrypoint.path, entrypoint.line, entrypoint.method_fqn,
+                entrypoint.owner_fqn, entrypoint.kind, entrypoint.reason,
+            )
+
+        connection.executemany(
+            "INSERT INTO entrypoints(file_id, method_fqn, owner_fqn, kind, "
+            "reason, line) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                entrypoint_row(entrypoint)
+                for entrypoint in sorted(entrypoints, key=entrypoint_sort_key)
             )
         )
         for index_name, definition in _INDEX_DEFINITIONS:

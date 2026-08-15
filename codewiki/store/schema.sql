@@ -128,6 +128,16 @@ CREATE TABLE IF NOT EXISTS annotations (
     raw TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS entrypoints (
+    entrypoint_id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    method_fqn TEXT NOT NULL,
+    owner_fqn TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    line INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_fqn);
 CREATE INDEX IF NOT EXISTS idx_calls_target ON calls(target_fqn);
 CREATE INDEX IF NOT EXISTS idx_calls_name ON calls(name);
@@ -147,6 +157,12 @@ CREATE INDEX IF NOT EXISTS idx_annotations_owner
     ON annotations(owner_fqn);
 CREATE INDEX IF NOT EXISTS idx_annotations_file
     ON annotations(file_id);
+CREATE INDEX IF NOT EXISTS idx_entrypoints_method
+    ON entrypoints(method_fqn);
+CREATE INDEX IF NOT EXISTS idx_entrypoints_kind
+    ON entrypoints(kind);
+CREATE INDEX IF NOT EXISTS idx_entrypoints_file
+    ON entrypoints(file_id);
 
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_fqn ON symbols(fqn);
