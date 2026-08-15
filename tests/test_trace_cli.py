@@ -11,6 +11,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARGET = "status.StatusUpdateServiceWithAnExcessivelyLongName.updateStatus"
+NO_ENTRYPOINT_TARGET = "status.Unreached.run"
 SERVICE = "app.StatusService.invoke"
 MAIN = "batch.LongRunningJobWithAnExcessivelyLongName.main"
 SERVLET = "web.StatusServlet.doPost"
@@ -36,7 +37,7 @@ def write_file(root, relative_path, contents):
 
 
 class TraceCliIntegrationTests(unittest.TestCase):
-    def _fixture(self, root):
+    def _fixture(self, root, jaxrs=False, main=True):
         write_file(
             root,
             "src/status/StatusUpdateServiceWithAnExcessivelyLongName.java",
@@ -65,28 +66,39 @@ class TraceCliIntegrationTests(unittest.TestCase):
             "src/web/StatusServlet.java",
             "package web;\n"
             "import app.StatusService;\n"
-            "public class StatusServlet {\n"
-            "    public void doPost() {\n"
-            "        StatusService service = new StatusService();\n"
-            "        service.invoke();\n"
-            "    }\n"
-            "}\n",
+            + ("@Path(\"/status\")\n" if jaxrs else "")
+            + "public class StatusServlet extends HttpServlet {\n"
+            + ("    @GET\n" if jaxrs else "")
+            + "    public void doPost() {\n"
+            + "        StatusService service = new StatusService();\n"
+            + "        service.invoke();\n"
+            + "    }\n"
+            + "}\n",
         )
         write_file(
             root,
-            "src/batch/LongRunningJobWithAnExcessivelyLongName.java",
-            "package batch;\n"
-            "import app.StatusService;\n"
-            "public class LongRunningJobWithAnExcessivelyLongName {\n"
-            "    public static void main(String[] args) {\n"
-            "        StatusService service = new StatusService();\n"
-            "        service.invoke();\n"
-            "    }\n"
+            "src/status/Unreached.java",
+            "package status;\n"
+            "public class Unreached {\n"
+            "    public void run() {}\n"
             "}\n",
         )
+        if main:
+            write_file(
+                root,
+                "src/batch/LongRunningJobWithAnExcessivelyLongName.java",
+                "package batch;\n"
+                "import app.StatusService;\n"
+                "public class LongRunningJobWithAnExcessivelyLongName {\n"
+                "    public static void main(String[] args) {\n"
+                "        StatusService service = new StatusService();\n"
+                "        service.invoke();\n"
+                "    }\n"
+                "}\n",
+            )
 
-    def _index(self, root, out):
-        self._fixture(root)
+    def _index(self, root, out, jaxrs=False, main=True):
+        self._fixture(root, jaxrs=jaxrs, main=main)
         indexed = run_cli("index", root, "--out", out, "--jobs", "1", "--quiet")
         self.assertEqual(
             0,
@@ -94,30 +106,6 @@ class TraceCliIntegrationTests(unittest.TestCase):
             "index stdout:\n%s\nindex stderr:\n%s"
             % (indexed.stdout, indexed.stderr),
         )
-
-    def _entrypoints(self, out, rows):
-        connection = sqlite3.connect(os.path.join(out, "index.sqlite3"))
-        try:
-            connection.execute(
-                "CREATE TABLE entrypoints(method_fqn TEXT NOT NULL, kind TEXT NOT NULL)"
-            )
-            connection.executemany(
-                "INSERT INTO entrypoints(method_fqn, kind) VALUES (?, ?)", rows
-            )
-            connection.commit()
-        finally:
-            connection.close()
-
-    def _replace_entrypoints(self, out, rows):
-        connection = sqlite3.connect(os.path.join(out, "index.sqlite3"))
-        try:
-            connection.execute("DELETE FROM entrypoints")
-            connection.executemany(
-                "INSERT INTO entrypoints(method_fqn, kind) VALUES (?, ?)", rows
-            )
-            connection.commit()
-        finally:
-            connection.close()
 
     def test_trace_up_json_and_human_output_preserve_trace_order_and_spacing(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-trace-repo-") as root, \
@@ -247,10 +235,6 @@ class TraceCliIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="codewiki-trace-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-trace-out-") as out:
             self._index(root, out)
-            self._entrypoints(
-                out,
-                [(SERVLET, "servlet"), (MAIN, "main")],
-            )
 
             queried = run_cli(
                 "trace-up", TARGET, "--out", out, "--entrypoints", "--json"
@@ -352,14 +336,14 @@ class TraceCliIntegrationTests(unittest.TestCase):
                 human.stdout.splitlines(),
             )
 
-            self._replace_entrypoints(out, [("unrelated.Method.run", "main")])
             no_match = run_cli(
-                "trace-up", TARGET, "--out", out, "--entrypoints", "--limit", "1"
+                "trace-up", NO_ENTRYPOINT_TARGET, "--out", out,
+                "--entrypoints", "--limit", "1"
             )
             self.assertEqual(0, no_match.returncode, no_match.stderr)
             self.assertEqual("", no_match.stderr)
             self.assertEqual(
-                "no entry point reaches " + TARGET + "\n",
+                "no entry point reaches " + NO_ENTRYPOINT_TARGET + "\n",
                 no_match.stdout,
             )
 
@@ -367,7 +351,6 @@ class TraceCliIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="codewiki-trace-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-trace-out-") as out:
             self._index(root, out)
-            self._entrypoints(out, [(MAIN, "main")])
 
             limited = run_cli(
                 "trace-up", TARGET, "--out", out, "--entrypoints", "--limit", "0"
@@ -385,11 +368,7 @@ class TraceCliIntegrationTests(unittest.TestCase):
     def test_entrypoints_emit_each_kind_for_same_reached_method(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-trace-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-trace-out-") as out:
-            self._index(root, out)
-            self._entrypoints(
-                out,
-                [(SERVLET, "servlet"), (SERVLET, "jaxrs")],
-            )
+            self._index(root, out, jaxrs=True, main=False)
 
             queried = run_cli(
                 "trace-up", TARGET, "--out", out, "--entrypoints", "--json"
