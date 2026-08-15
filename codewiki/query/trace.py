@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .calls import callers
 from .types import TypeQueryError, _readonly
@@ -108,3 +108,33 @@ def path_to(nodes: List[TraceNode], fqn: str) -> List[TraceNode]:
             break
         current = by_fqn.get(current.parent_fqn)
     return result
+
+
+def entrypoints_among(path: str, fqns: Sequence[str]) -> Dict[str, Tuple[str, ...]]:
+    """Return sorted entrypoint kinds for the requested indexed methods."""
+    requested = list(dict.fromkeys(fqns))
+    if not requested:
+        return {}
+
+    connection = _readonly(path)
+    try:
+        kinds_by_fqn = {}
+        for offset in range(0, len(requested), 900):
+            batch = requested[offset:offset + 900]
+            placeholders = ", ".join("?" for _fqn in batch)
+            rows = connection.execute(
+                "SELECT method_fqn, kind FROM entrypoints "
+                "WHERE method_fqn IN (" + placeholders + ") "
+                "ORDER BY method_fqn, kind",
+                batch,
+            ).fetchall()
+            for method_fqn, kind in rows:
+                kinds_by_fqn.setdefault(method_fqn, set()).add(kind)
+        return {
+            method_fqn: tuple(sorted(kinds))
+            for method_fqn, kinds in sorted(kinds_by_fqn.items())
+        }
+    except sqlite3.DatabaseError as exc:
+        raise TypeQueryError("index database missing or stale; rerun index") from exc
+    finally:
+        connection.close()
