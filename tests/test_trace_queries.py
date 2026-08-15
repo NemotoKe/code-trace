@@ -74,13 +74,23 @@ class TraceQueryTests(unittest.TestCase):
             connection.close()
 
     def _entrypoints(self, rows):
+        file_id = self._file("src/entrypoints/Fixture.java")
         connection = sqlite3.connect(self.db_path)
         try:
-            connection.execute(
-                "CREATE TABLE entrypoints(method_fqn TEXT NOT NULL, kind TEXT NOT NULL)"
-            )
             connection.executemany(
-                "INSERT INTO entrypoints(method_fqn, kind) VALUES (?, ?)", rows
+                "INSERT INTO entrypoints(file_id, method_fqn, owner_fqn, kind, "
+                "reason, line) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    (
+                        file_id,
+                        method_fqn,
+                        method_fqn.rsplit(".", 1)[0],
+                        kind,
+                        "test:%s" % kind,
+                        1,
+                    )
+                    for method_fqn, kind in rows
+                ),
             )
             connection.commit()
         finally:
@@ -221,23 +231,23 @@ class TraceQueryTests(unittest.TestCase):
 
         self.assertEqual({}, entrypoints_among(self.db_path, []))
 
-    def test_entrypoints_among_wraps_missing_database_or_table_errors(self):
+    def test_entrypoints_among_wraps_missing_or_uninitialized_database_errors(self):
         from codewiki.query.trace import TypeQueryError, entrypoints_among
 
-        with self.assertRaises(TypeQueryError) as missing_table:
-            entrypoints_among(self.db_path, ["p.Missing.missing"])
-        self.assertEqual(
-            "index database missing or stale; rerun index",
-            str(missing_table.exception),
+        uninitialized_path = os.path.join(
+            self.directory.name, "uninitialized.sqlite3"
         )
+        sqlite3.connect(uninitialized_path).close()
 
         missing_path = os.path.join(self.directory.name, "missing.sqlite3")
-        with self.assertRaises(TypeQueryError) as missing_database:
-            entrypoints_among(missing_path, ["p.Missing.missing"])
-        self.assertEqual(
-            "index database missing or stale; rerun index",
-            str(missing_database.exception),
-        )
+        for path in (uninitialized_path, missing_path):
+            with self.subTest(path=path):
+                with self.assertRaises(TypeQueryError) as database_error:
+                    entrypoints_among(path, ["p.Missing.missing"])
+                self.assertEqual(
+                    "index database missing or stale; rerun index",
+                    str(database_error.exception),
+                )
 
 
 if __name__ == "__main__":
