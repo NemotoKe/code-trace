@@ -789,6 +789,115 @@ def tables(statement: str, verb: str) -> Tuple[str, ...]:
         )
 
 
+def _table_candidates_without_alias_paths(
+        statement: str, candidates: List[Tuple[str, int, int]]
+        ) -> Tuple[Tuple[str, int, int], ...]:
+    aliases = set(_nested_select_aliases(statement, 0, len(statement)))
+    for _name, _start, end in candidates:
+        alias = _table_alias_after(statement, end)
+        if alias is not None:
+            aliases.add(alias.casefold())
+
+    result = []
+    for candidate in candidates:
+        name = candidate[0]
+        first_segment, separator, _rest = name.partition(".")
+        if separator and first_segment.casefold() in aliases:
+            continue
+        result.append(candidate)
+    return tuple(result)
+
+
+def _table_alias_candidates(statement: str, verb: str
+                            ) -> Tuple[Tuple[str, int, int], ...]:
+    start = _statement_start(statement, verb)
+    if start is None:
+        return ()
+
+    candidates = []
+    if verb in {"select", "delete"}:
+        match = _top_level_match(_FROM_WORD, statement, start, len(statement))
+        if match is None:
+            candidates.extend(_nested_select_candidates(
+                statement, start, len(statement),
+            ))
+        else:
+            from_candidates = _from_table_candidates(
+                statement, match.end(), len(statement),
+            )
+            if from_candidates is not None:
+                candidates.extend(from_candidates)
+                candidates.extend(_nested_select_candidates(
+                    statement, start, len(statement),
+                ))
+    elif verb == "update":
+        candidate = _table_candidate_after(statement, start)
+        if candidate is not None:
+            candidates.append(candidate)
+        candidates.extend(_nested_select_candidates(
+            statement, start, len(statement),
+        ))
+    elif verb == "insert":
+        match = _top_level_match(_INTO_WORD, statement, start, len(statement))
+        if match is not None:
+            candidate = _table_candidate_after(
+                statement, match.end(), allow_parenthesis=True,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+        candidates.extend(_nested_select_candidates(
+            statement, start, len(statement),
+        ))
+    elif verb == "merge":
+        match = _top_level_match(_INTO_WORD, statement, start, len(statement))
+        if match is not None:
+            target = _table_candidate_after(statement, match.end())
+            if target is not None:
+                candidates.append(target)
+                using = _top_level_match(
+                    _USING_WORD, statement, match.end(), len(statement),
+                )
+                if using is not None:
+                    source = _table_candidate_after(
+                        statement, using.end(),
+                    )
+                    if source is not None:
+                        candidates.append(source)
+        candidates.extend(_nested_select_candidates(
+            statement, start, len(statement),
+        ))
+
+    candidates.sort(key=lambda candidate: candidate[1])
+    return _table_candidates_without_alias_paths(statement, candidates)
+
+
+def table_aliases(statement: str, verb: str) -> Dict[str, str]:
+    normalized_verb = verb.strip().lower()
+    if normalized_verb not in {"select", "delete", "insert", "update", "merge"}:
+        return {}
+
+    claims: Dict[str, str] = {}
+    ambiguous = set()
+    for name, _start, end in _table_alias_candidates(
+            statement, normalized_verb,
+    ):
+        alias = _table_alias_after(statement, end)
+        keys = [name.casefold()]
+        if alias is not None:
+            keys.insert(0, alias.casefold())
+
+        for key in dict.fromkeys(keys):
+            if key in ambiguous:
+                continue
+            previous = claims.get(key)
+            if previous is None:
+                claims[key] = name
+            elif previous != name:
+                del claims[key]
+                ambiguous.add(key)
+    return claims
+
+
 def _write_table_name(statement: str, verb: str) -> Optional[str]:
     start = _statement_start(statement, verb)
     if start is None or verb == "select":
