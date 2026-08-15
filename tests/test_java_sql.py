@@ -4,6 +4,112 @@ import unittest
 
 
 class JavaSqlTests(unittest.TestCase):
+    def test_written_columns_case_table(self):
+        from codewiki.index.sql import ColumnWrite, written_columns
+
+        cases = [
+            (
+                "UPDATE ORDERS SET STATUS = ?",
+                "update",
+                (ColumnWrite("ORDERS", "STATUS"),),
+            ),
+            (
+                "UPDATE ORDERS SET STATUS = ?, UPDATED_AT = ?",
+                "update",
+                (
+                    ColumnWrite("ORDERS", "STATUS"),
+                    ColumnWrite("ORDERS", "UPDATED_AT"),
+                ),
+            ),
+            (
+                "UPDATE Batch2JobInstanceEntity e SET e.myStatus = :status "
+                "WHERE e.myId = :id",
+                "update",
+                (ColumnWrite("Batch2JobInstanceEntity", "myStatus"),),
+            ),
+            (
+                "UPDATE ORDERS SET STATUS = ? WHERE STATUS = 'NEW'",
+                "update",
+                (ColumnWrite("ORDERS", "STATUS"),),
+            ),
+            (
+                "UPDATE orders SET status = (SELECT s FROM audit "
+                "WHERE audit.flag = ?)",
+                "update",
+                (ColumnWrite("orders", "status"),),
+            ),
+            (
+                "insert into HFJ_RESOURCE (RES_VERSION, HAS_TAGS) "
+                "values (?, ?)",
+                "insert",
+                (
+                    ColumnWrite("HFJ_RESOURCE", "RES_VERSION"),
+                    ColumnWrite("HFJ_RESOURCE", "HAS_TAGS"),
+                ),
+            ),
+            (
+                "INSERT INTO t VALUES (?, ?)",
+                "insert",
+                (),
+            ),
+            (
+                "SELECT * FROM ORDERS",
+                "select",
+                (),
+            ),
+            (
+                "DELETE FROM ORDERS WHERE ID = ?",
+                "delete",
+                (),
+            ),
+            (
+                "Update succeeded.",
+                "update",
+                (),
+            ),
+            (
+                "update hfj_resource set fhir_id = coalesce(",
+                "update",
+                (ColumnWrite("hfj_resource", "fhir_id"),),
+            ),
+            (
+                "UPDATE t SET a = 1, b = f(",
+                "update",
+                (
+                    ColumnWrite("t", "a"),
+                    ColumnWrite("t", "b"),
+                ),
+            ),
+            (
+                "UPDATE t SET a = f(1), b = 2",
+                "update",
+                (
+                    ColumnWrite("t", "a"),
+                    ColumnWrite("t", "b"),
+                ),
+            ),
+            (
+                "UPDATE t SET a = (",
+                "update",
+                (ColumnWrite("t", "a"),),
+            ),
+            (
+                "UPDATE t SET (",
+                "update",
+                (),
+            ),
+            (
+                "update HFJ_RES_LINK set "
+                "(TARGET_RESOURCE_ID,TARGET_RES_PARTITION_ID) = (null, null)",
+                "update",
+                (),
+            ),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, written_columns(statement, verb))
+
     def test_table_accesses_case_table(self):
         from codewiki.index.sql import TableAccess, table_accesses
 
