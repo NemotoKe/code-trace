@@ -42,6 +42,32 @@ class SqlPersistenceTests(unittest.TestCase):
             connection.close()
 
     @staticmethod
+    def _column_rows(db_path):
+        connection = sqlite3.connect(db_path)
+        try:
+            return connection.execute(
+                "SELECT f.path, c.method_fqn, c.method_kind, c.line, c.verb, "
+                "c.table_name, c.table_key, c.column_name, c.column_key, "
+                "c.access, c.statement "
+                "FROM sql_column_accesses AS c JOIN files AS f USING(file_id) "
+                "ORDER BY c.column_access_id"
+            ).fetchall()
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _all_sql_column_rows(db_path):
+        connection = sqlite3.connect(db_path)
+        try:
+            return connection.execute(
+                "SELECT column_access_id, file_id, method_fqn, method_kind, line, "
+                "verb, table_name, table_key, column_name, column_key, access, "
+                "statement FROM sql_column_accesses ORDER BY column_access_id"
+            ).fetchall()
+        finally:
+            connection.close()
+
+    @staticmethod
     def _sql_rows_in_access_id_order(db_path):
         connection = sqlite3.connect(db_path)
         try:
@@ -127,6 +153,81 @@ class SqlPersistenceTests(unittest.TestCase):
         self.assertEqual(
             [("Orders", "orders"), ("ORDERS", "orders")],
             [(row[5], row[6]) for row in rows],
+        )
+
+    def test_pipeline_persists_written_sql_columns(self):
+        from codewiki.index import pipeline
+
+        source = (
+            "package p;\n"
+            "class OrderRepository {\n"
+            "    void execute() {\n"
+            "        String update = \"UPDATE ORDERS SET STATUS = ?, UPDATED_AT = ?\";\n"
+            "        String create = \"insert into audit_log (id, note) values (?, ?)\";\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="codewiki-sql-column-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-sql-column-out-") as out:
+            self._write_file(root, "src/p/OrderRepository.java", source)
+            result = pipeline.run(root, out, jobs=1)
+            rows = self._column_rows(result.db_path)
+
+        self.assertEqual(2, result.sql_statements_found)
+        self.assertEqual(4, result.sql_column_rows)
+        self.assertEqual(
+            [
+                (
+                    "src/p/OrderRepository.java", "p.OrderRepository.execute",
+                    "method", 4, "update", "ORDERS", "orders", "STATUS",
+                    "status", "WRITE",
+                    "UPDATE ORDERS SET STATUS = ?, UPDATED_AT = ?",
+                ),
+                (
+                    "src/p/OrderRepository.java", "p.OrderRepository.execute",
+                    "method", 4, "update", "ORDERS", "orders", "UPDATED_AT",
+                    "updated_at", "WRITE",
+                    "UPDATE ORDERS SET STATUS = ?, UPDATED_AT = ?",
+                ),
+                (
+                    "src/p/OrderRepository.java", "p.OrderRepository.execute",
+                    "method", 5, "insert", "audit_log", "audit_log", "id",
+                    "id", "WRITE",
+                    "insert into audit_log (id, note) values (?, ?)",
+                ),
+                (
+                    "src/p/OrderRepository.java", "p.OrderRepository.execute",
+                    "method", 5, "insert", "audit_log", "audit_log", "note",
+                    "note", "WRITE",
+                    "insert into audit_log (id, note) values (?, ?)",
+                ),
+            ],
+            rows,
+        )
+
+    def test_pipeline_folds_table_and_column_keys_case(self):
+        from codewiki.index import pipeline
+
+        source = (
+            "package p;\n"
+            "class Lookup {\n"
+            "    void update() {\n"
+            "        String first = \"UPDATE Orders SET Status = ?\";\n"
+            "        String second = \"update ORDERS set STATUS = ?\";\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="codewiki-sql-column-case-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-sql-column-case-out-") as out:
+            self._write_file(root, "src/p/Lookup.java", source)
+            result = pipeline.run(root, out, jobs=1)
+            rows = self._column_rows(result.db_path)
+
+        self.assertEqual(2, result.sql_column_rows)
+        self.assertEqual(
+            [("Orders", "orders", "Status", "status"),
+             ("ORDERS", "orders", "STATUS", "status")],
+            [(row[5], row[6], row[7], row[8]) for row in rows],
         )
 
     def test_pipeline_persists_sql_accesses_in_canonical_order(self):
@@ -232,6 +333,31 @@ class SqlPersistenceTests(unittest.TestCase):
         self.assertEqual(first.sql_access_rows, len(first_rows))
         self.assertEqual(second.sql_access_rows, len(second_rows))
 
+    def test_repeated_indexing_has_identical_sql_column_rows(self):
+        from codewiki.index import pipeline
+
+        source = (
+            "package p;\n"
+            "class Repository {\n"
+            "    void run() {\n"
+            "        String update = \"UPDATE orders SET status = ?, updated_at = ?\";\n"
+            "        String create = \"INSERT INTO audit_log (id, note) VALUES (?, ?)\";\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="codewiki-sql-column-repeat-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-sql-column-repeat-out-one-") as out_one, \
+                tempfile.TemporaryDirectory(prefix="codewiki-sql-column-repeat-out-two-") as out_two:
+            self._write_file(root, "src/p/Repository.java", source)
+            first = pipeline.run(root, out_one, jobs=1)
+            second = pipeline.run(root, out_two, jobs=1)
+            first_rows = self._all_sql_column_rows(first.db_path)
+            second_rows = self._all_sql_column_rows(second.db_path)
+
+        self.assertEqual(first_rows, second_rows)
+        self.assertEqual(first.sql_column_rows, len(first_rows))
+        self.assertEqual(second.sql_column_rows, len(second_rows))
+
     def test_schema_contains_sql_accesses_table_and_indexes(self):
         from codewiki.store.db import connect, initialize
 
@@ -256,6 +382,38 @@ class SqlPersistenceTests(unittest.TestCase):
                 {
                     "idx_sql_accesses_table", "idx_sql_accesses_method",
                     "idx_sql_accesses_file",
+                },
+                indexes,
+            )
+        finally:
+            connection.close()
+
+    def test_schema_contains_sql_column_accesses_table_and_indexes(self):
+        from codewiki.store.db import connect, initialize
+
+        connection = connect(":memory:")
+        try:
+            initialize(connection, repo_root="/repo")
+            self.assertEqual(
+                [
+                    "column_access_id", "file_id", "method_fqn", "method_kind",
+                    "line", "verb", "table_name", "table_key", "column_name",
+                    "column_key", "access", "statement",
+                ],
+                [row[1] for row in connection.execute(
+                    "PRAGMA table_info(sql_column_accesses)"
+                )],
+            )
+            indexes = {
+                row[1] for row in connection.execute(
+                    "PRAGMA index_list(sql_column_accesses)"
+                )
+            }
+            self.assertEqual(
+                {
+                    "idx_sql_column_accesses_column",
+                    "idx_sql_column_accesses_method",
+                    "idx_sql_column_accesses_file",
                 },
                 indexes,
             )
