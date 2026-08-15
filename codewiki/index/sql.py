@@ -24,6 +24,12 @@ class TableAccess:
 
 
 @dataclass(frozen=True)
+class ColumnWrite:
+    table: str
+    column: str
+
+
+@dataclass(frozen=True)
 class _StringLiteral:
     start: int
     end: int
@@ -252,6 +258,13 @@ _SELECT_WORD = re.compile(
 _INTO_WORD = re.compile(
     r"(?<![A-Za-z0-9_$])INTO(?![A-Za-z0-9_$])", re.IGNORECASE,
 )
+_SET_WORD = re.compile(
+    r"(?<![A-Za-z0-9_$])SET(?![A-Za-z0-9_$])", re.IGNORECASE,
+)
+_WHERE_WORD = re.compile(
+    r"(?<![A-Za-z0-9_$])WHERE(?![A-Za-z0-9_$])", re.IGNORECASE,
+)
+_ASSIGNMENT_EQUALS = re.compile(r"(?<![<>=!])=(?!=)")
 _USING_WORD = re.compile(
     r"(?<![A-Za-z0-9_$])USING(?![A-Za-z0-9_$])", re.IGNORECASE,
 )
@@ -811,6 +824,169 @@ def table_accesses(statement: str, verb: str) -> Tuple[TableAccess, ...]:
         seen.add(pair)
         result.append(TableAccess(name, access))
     return tuple(result)
+
+
+def _top_level_segments(statement: str, start: int, limit: int
+                        ) -> List[Tuple[int, int]]:
+    segments = []
+    segment_start = start
+    position = start
+    while position < limit:
+        if statement.startswith("--", position) \
+                or statement.startswith("/*", position):
+            position = _skip_sql_comment(statement, position, limit)
+            continue
+        if statement[position] in "'\"`[":
+            position = _skip_sql_quoted(statement, position, limit)
+            continue
+        if statement[position] == "(":
+            closing = _balanced_parenthesis_end(statement, position, limit)
+            if closing is None:
+                segments.append((segment_start, position))
+                return segments
+            position = closing + 1
+            continue
+        if statement[position] == ",":
+            segments.append((segment_start, position))
+            segment_start = position + 1
+        position += 1
+    segments.append((segment_start, limit))
+    return segments
+
+
+def _column_identifier_at(statement: str, position: int, limit: int
+                          ) -> Optional[Tuple[str, int, bool]]:
+    position = _skip_sql_noise(statement, position, limit)
+    if position >= limit:
+        return None
+
+    if statement[position] in "\"`[":
+        quote = statement[position]
+        closing = "]" if quote == "[" else quote
+        end = _skip_sql_quoted(statement, position, limit)
+        if end <= position or end > limit or statement[end - 1] != closing:
+            return None
+        return statement[position + 1:end - 1], end, True
+
+    match = _TABLE_IDENTIFIER_PATTERN.match(statement, position)
+    if match is None or match.end() > limit:
+        return None
+    name = match.group(0)
+    if name.startswith("$") and len(name) > 1 and name[1].isdigit():
+        return None
+    return name, match.end(), False
+
+
+def _column_name_in_span(statement: str, start: int, limit: int
+                         ) -> Optional[str]:
+    position = _skip_sql_noise(statement, start, limit)
+    segments = []
+    while position < limit:
+        parsed = _column_identifier_at(statement, position, limit)
+        if parsed is None:
+            return None
+        name, position, quoted = parsed
+        if not name:
+            return None
+        segments.append((name, quoted))
+        position = _skip_sql_noise(statement, position, limit)
+        if position >= limit or statement[position] != ".":
+            break
+        position = _skip_sql_noise(statement, position + 1, limit)
+
+    if _skip_sql_noise(statement, position, limit) != limit:
+        return None
+    column, quoted = segments[-1]
+    if not quoted and column.upper() in _SQL_TABLE_KEYWORDS:
+        return None
+    return column
+
+
+def _update_written_columns(statement: str, table: str
+                            ) -> Tuple[ColumnWrite, ...]:
+    start = _statement_start(statement, "update")
+    if start is None:
+        return ()
+    set_match = _top_level_match(_SET_WORD, statement, start, len(statement))
+    if set_match is None:
+        return ()
+
+    where_match = _top_level_match(
+        _WHERE_WORD, statement, set_match.end(), len(statement),
+    )
+    limit = len(statement) if where_match is None else where_match.start()
+    assignments = _top_level_segments(statement, set_match.end(), limit)
+
+    result = []
+    seen = set()
+    for assignment_start, assignment_end in assignments:
+        equals = _top_level_match(
+            _ASSIGNMENT_EQUALS, statement, assignment_start, assignment_end,
+        )
+        if equals is None:
+            continue
+        column = _column_name_in_span(
+            statement, assignment_start, equals.start(),
+        )
+        if column is None:
+            continue
+        pair = (table, column)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        result.append(ColumnWrite(table, column))
+    return tuple(result)
+
+
+def _insert_written_columns(statement: str, table: str
+                            ) -> Tuple[ColumnWrite, ...]:
+    start = _statement_start(statement, "insert")
+    if start is None:
+        return ()
+    into_match = _top_level_match(_INTO_WORD, statement, start, len(statement))
+    if into_match is None:
+        return ()
+    candidate = _table_candidate_after(
+        statement, into_match.end(), allow_parenthesis=True,
+    )
+    if candidate is None or candidate[0] != table:
+        return ()
+
+    opening = _skip_sql_noise(statement, candidate[2], len(statement))
+    if opening >= len(statement) or statement[opening] != "(":
+        return ()
+    closing = _balanced_parenthesis_end(statement, opening)
+    if closing is None:
+        return ()
+
+    column_spans = _top_level_segments(statement, opening + 1, closing)
+
+    columns = []
+    seen = set()
+    for column_start, column_end in column_spans:
+        column = _column_name_in_span(statement, column_start, column_end)
+        if column is None:
+            return ()
+        if column in seen:
+            continue
+        seen.add(column)
+        columns.append(ColumnWrite(table, column))
+    return tuple(columns)
+
+
+def written_columns(statement: str, verb: str) -> Tuple[ColumnWrite, ...]:
+    normalized_verb = verb.strip().lower()
+    if normalized_verb not in {"insert", "update", "delete", "merge"}:
+        return ()
+
+    table = _write_table_name(statement, normalized_verb)
+    if table is None:
+        return ()
+    if normalized_verb == "update":
+        return _update_written_columns(statement, table)
+    if normalized_verb == "insert":
+        return _insert_written_columns(statement, table)
+    return ()
 
 
 def extract(rel_path: str, language: str, text: str,
