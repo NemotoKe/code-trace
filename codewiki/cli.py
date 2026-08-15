@@ -8,6 +8,7 @@ import sys
 from .index import pipeline
 from .query.calls import callees as query_callees
 from .query.calls import callers as query_callers
+from .query.sql import column_accesses as query_column_accesses
 from .query.sql import accesses as query_accesses
 from .query.symbols import QueryError, search_path
 from .query.types import TypeQueryError, resolve_type_path, subtypes
@@ -18,6 +19,12 @@ def _nonnegative(value):
     if number < 0:
         raise argparse.ArgumentTypeError("must be non-negative")
     return number
+
+
+def _column_argument(value):
+    if "." not in value:
+        raise argparse.ArgumentTypeError("expected TABLE.COLUMN")
+    return value
 
 
 def _parser():
@@ -60,6 +67,18 @@ def _parser():
     access = table.add_mutually_exclusive_group()
     access.add_argument("--read", dest="access", action="store_const", const="READ")
     access.add_argument("--write", dest="access", action="store_const", const="WRITE")
+    column = commands.add_parser("column")
+    column.add_argument("table_column", type=_column_argument)
+    column.add_argument("--out", default=None)
+    column.add_argument("--json", action="store_true")
+    column.add_argument("--limit", type=_nonnegative, default=None)
+    column_access = column.add_mutually_exclusive_group()
+    column_access.add_argument(
+        "--read", dest="access", action="store_const", const="READ"
+    )
+    column_access.add_argument(
+        "--write", dest="access", action="store_const", const="WRITE"
+    )
     callees = commands.add_parser("callees")
     callees.add_argument("fqn")
     callees.add_argument("--out", default=None)
@@ -278,6 +297,41 @@ def _table(args):
     return 0
 
 
+def _column(args):
+    table, column = args.table_column.rsplit(".", 1)
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    results = query_column_accesses(
+        os.path.join(out, "index.sqlite3"), table, column, args.access
+    )
+    truncated = args.limit is not None and len(results) > max(0, args.limit)
+    if args.limit is not None:
+        results = results[:max(0, args.limit)]
+    read = sum(item.access == "READ" for item in results)
+    write = sum(item.access == "WRITE" for item in results)
+    if args.json:
+        print(json.dumps({
+            "table": table,
+            "column": column,
+            "access": args.access,
+            "count": len(results),
+            "truncated": truncated,
+            "read": read,
+            "write": write,
+            "results": [item.as_dict() for item in results],
+        }, ensure_ascii=False, separators=(",", ":")))
+        return 0
+    for item in results:
+        statement = " ".join(item.statement.split())[:100]
+        location = "%s:%d" % (item.path, item.line)
+        print("%s  %s  %s  %s  %s" % (
+            item.access, item.verb, item.method_fqn, location, statement,
+        ))
+    if truncated:
+        print("truncated: limit reached")
+    print("%d accesses (%d read, %d write)" % (len(results), read, write))
+    return 0
+
+
 def _callees(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     results = query_callees(
@@ -333,6 +387,8 @@ def main(argv=None):
             return _callers(args)
         if args.command == "table":
             return _table(args)
+        if args.command == "column":
+            return _column(args)
         if args.command == "callees":
             return _callees(args)
         return _resolve_type(args)
