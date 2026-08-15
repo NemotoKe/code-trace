@@ -128,6 +128,17 @@ class JavaSqlTests(unittest.TestCase):
             with self.subTest(statement=statement, verb=verb):
                 self.assertEqual(expected, read_columns(statement, verb))
 
+    def test_read_columns_reserved_word_table(self):
+        from codewiki.index.sql import ColumnRead, read_columns
+
+        self.assertEqual(
+            (
+                ColumnRead("ORDER", "STATUS"),
+                ColumnRead("ORDER", "ID"),
+            ),
+            read_columns("SELECT STATUS FROM ORDER WHERE ID = ?", "select"),
+        )
+
     def test_written_columns_case_table(self):
         from codewiki.index.sql import ColumnWrite, written_columns
 
@@ -233,6 +244,14 @@ class JavaSqlTests(unittest.TestCase):
         for statement, verb, expected in cases:
             with self.subTest(statement=statement, verb=verb):
                 self.assertEqual(expected, written_columns(statement, verb))
+
+    def test_written_columns_reserved_word_table(self):
+        from codewiki.index.sql import ColumnWrite, written_columns
+
+        self.assertEqual(
+            (ColumnWrite("ORDER", "STATUS"),),
+            written_columns("UPDATE ORDER SET STATUS = ?", "update"),
+        )
 
     def test_table_accesses_case_table(self):
         from codewiki.index.sql import TableAccess, table_accesses
@@ -349,6 +368,14 @@ class JavaSqlTests(unittest.TestCase):
             with self.subTest(statement=statement, verb=verb):
                 self.assertEqual(expected, table_accesses(statement, verb))
 
+    def test_table_accesses_reserved_word_table(self):
+        from codewiki.index.sql import TableAccess, table_accesses
+
+        self.assertEqual(
+            (TableAccess("ORDER", "WRITE"),),
+            table_accesses("UPDATE ORDER SET STATUS = ?", "update"),
+        )
+
     def test_table_aliases_case_table(self):
         from codewiki.index.sql import table_aliases
 
@@ -435,6 +462,14 @@ class JavaSqlTests(unittest.TestCase):
             with self.subTest(statement=statement, verb=verb):
                 self.assertEqual(expected, table_aliases(statement, verb))
 
+    def test_table_aliases_reserved_word_table(self):
+        from codewiki.index.sql import table_aliases
+
+        self.assertEqual(
+            {"o": "ORDER", "order": "ORDER"},
+            table_aliases("SELECT * FROM ORDER o", "select"),
+        )
+
     def test_table_aliases_omits_ambiguous_qualifiers(self):
         from codewiki.index.sql import table_aliases
 
@@ -482,6 +517,56 @@ class JavaSqlTests(unittest.TestCase):
             ("orders",),
             tables("SELECT * FROM [orders]", "select"),
         )
+
+    def test_tables_reserved_word_targets(self):
+        from codewiki.index.sql import tables
+
+        cases = [
+            (
+                "UPDATE ORDER SET STATUS = ? WHERE ID = ?",
+                "update",
+                ("ORDER",),
+            ),
+            (
+                "SELECT STATUS FROM ORDER WHERE ID = ?",
+                "select",
+                ("ORDER",),
+            ),
+            (
+                "DELETE FROM ORDER WHERE ID = ?",
+                "delete",
+                ("ORDER",),
+            ),
+            ('SELECT * FROM "ORDER" WHERE ID = ?', "select", ("ORDER",)),
+            ("SELECT * FROM `ORDER`", "select", ("ORDER",)),
+            ("SELECT * FROM [ORDER]", "select", ("ORDER",)),
+            ('SELECT * FROM "LEFT"', "select", ("LEFT",)),
+            ("SELECT * FROM T ORDER BY X", "select", ("T",)),
+            ("SELECT * FROM T GROUP BY X", "select", ("T",)),
+            ("SELECT * FROM order by X", "select", ()),
+            ("SELECT * FROM GROUP /* comment */ BY X", "select", ()),
+            ("SELECT * FROM GROUP WHERE ID = ?", "select", ("GROUP",)),
+            ("SELECT * FROM LEFT", "select", ()),
+            (
+                "SELECT * FROM A LEFT JOIN B ON A.ID = B.ID",
+                "select",
+                ("A", "B"),
+            ),
+            (
+                "SELECT * FROM T ORDER /* comment */ BY X",
+                "select",
+                ("T",),
+            ),
+            (
+                "SELECT * FROM T GROUP -- comment\n BY X",
+                "select",
+                ("T",),
+            ),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, tables(statement, verb))
 
     def test_tables_ignores_select_table_alias(self):
         from codewiki.index.sql import tables

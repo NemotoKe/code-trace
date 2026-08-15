@@ -289,14 +289,16 @@ _SQL_TABLE_KEYWORDS = frozenset({
     "CURRENT", "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP",
     "DATABASE", "DEFAULT", "DELETE", "DESC", "DISTINCT", "DROP", "ELSE",
     "DUAL", "END", "EXCEPT", "EXISTS", "FETCH", "FOR", "FOREIGN", "FROM",
-    "FULL", "GROUP", "HAVING", "IN", "INDEX", "INNER", "INSERT",
+    "FULL", "HAVING", "IN", "INDEX", "INNER", "INSERT",
     "INTERSECT", "INTO", "IS", "JOIN", "KEY", "LEFT", "LIKE", "LIMIT",
-    "MERGE", "NOT", "NULL", "OFFSET", "ON", "OR", "ORDER", "OUTER",
+    "MERGE", "NOT", "NULL", "OFFSET", "ON", "OR", "OUTER",
     "OVER", "PARTITION", "PRIMARY", "REFERENCES", "RETURNING", "RIGHT",
     "ROLLBACK", "SELECT", "SET", "TABLE", "THEN", "TRUNCATE", "UNION",
     "UNIQUE", "UPDATE", "USING", "VALUE", "VALUES", "WHEN", "WHERE",
     "WITH", "NATURAL",
 })
+_ORDER_GROUP_KEYWORDS = frozenset({"ORDER", "GROUP"})
+_SQL_COLUMN_KEYWORDS = _SQL_TABLE_KEYWORDS | _ORDER_GROUP_KEYWORDS
 
 
 def _statement_start(statement: str, verb: str) -> Optional[int]:
@@ -308,8 +310,17 @@ def _statement_start(statement: str, verb: str) -> Optional[int]:
     return None if match is None else match.end()
 
 
+def _is_order_or_group_by(statement: str, name: str, position: int) -> bool:
+    if name.upper() not in _ORDER_GROUP_KEYWORDS:
+        return False
+    next_position = _skip_sql_noise(statement, position, len(statement))
+    next_token = _TABLE_IDENTIFIER_PATTERN.match(statement, next_position)
+    return next_token is not None and next_token.group(0).upper() == "BY"
+
+
 def _table_segment_after(statement: str, position: int
                          ) -> Optional[Tuple[str, int]]:
+    quoted = False
     match = _TABLE_IDENTIFIER_PATTERN.match(statement, position)
     if match is not None:
         name = match.group(0)
@@ -330,8 +341,13 @@ def _table_segment_after(statement: str, position: int
         if match is None:
             return None
         name = match.group(1)
-    if name.upper() in _SQL_TABLE_KEYWORDS:
-        return None
+        quoted = True
+    if not quoted:
+        upper_name = name.upper()
+        if upper_name in _SQL_TABLE_KEYWORDS:
+            return None
+        if _is_order_or_group_by(statement, upper_name, match.end()):
+            return None
     return name, match.end()
 
 
@@ -395,7 +411,9 @@ def _table_alias_span_after(
         return None
     name = alias.group(0)
     return (name, alias.end()) \
-        if name.upper() not in _SQL_TABLE_KEYWORDS else None
+        if (name.upper() not in _SQL_TABLE_KEYWORDS
+            and not _is_order_or_group_by(statement, name, alias.end())) \
+        else None
 
 
 def _source_suffix_is_complete(statement: str, end: int,
@@ -413,7 +431,10 @@ def _source_suffix_is_complete(statement: str, end: int,
     token = _TABLE_IDENTIFIER_PATTERN.match(statement, position)
     if token is None:
         return False
-    if token.group(0).upper() in _SQL_TABLE_KEYWORDS:
+    if (token.group(0).upper() in _SQL_TABLE_KEYWORDS
+            or _is_order_or_group_by(
+                statement, token.group(0), token.end(),
+            )):
         return True
 
     alias_end = token.end()
@@ -1012,7 +1033,7 @@ def _column_name_in_span(statement: str, start: int, limit: int
     if _skip_sql_noise(statement, position, limit) != limit:
         return None
     column, quoted = segments[-1]
-    if not quoted and column.upper() in _SQL_TABLE_KEYWORDS:
+    if not quoted and column.upper() in _SQL_COLUMN_KEYWORDS:
         return None
     return column
 
@@ -1282,7 +1303,7 @@ def _read_source_aliases(statement: str, tokens: List[_ReadToken],
             continue
         alias = tokens[next_index]
         if not alias.quoted and (
-                alias.text.upper() in _SQL_TABLE_KEYWORDS
+                alias.text.upper() in _SQL_COLUMN_KEYWORDS
                 or alias.text.upper() in _READ_NON_COLUMN_WORDS
         ):
             continue
@@ -1488,7 +1509,7 @@ def read_columns(statement: str, verb: str) -> Tuple[ColumnRead, ...]:
         if token.text.casefold() in alias_keys:
             continue
         if not token.quoted and (
-                token.text.upper() in _SQL_TABLE_KEYWORDS
+                token.text.upper() in _SQL_COLUMN_KEYWORDS
                 or token.text.upper() in _READ_NON_COLUMN_WORDS
         ):
             continue
