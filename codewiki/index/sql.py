@@ -30,6 +30,12 @@ class ColumnWrite:
 
 
 @dataclass(frozen=True)
+class ColumnRead:
+    table: str
+    column: str
+
+
+@dataclass(frozen=True)
 class _StringLiteral:
     start: int
     end: int
@@ -1096,6 +1102,405 @@ def written_columns(statement: str, verb: str) -> Tuple[ColumnWrite, ...]:
     if normalized_verb == "insert":
         return _insert_written_columns(statement, table)
     return ()
+
+
+@dataclass(frozen=True)
+class _ReadToken:
+    text: str
+    start: int
+    end: int
+    kind: str
+    quoted: bool = False
+
+
+_READ_NON_COLUMN_WORDS = frozenset({
+    "FALSE", "FETCH", "FIRST", "LAST", "LATERAL", "MATCHED", "NEW",
+    "NULLS", "ONLY", "RECURSIVE", "ROW", "ROWS", "TIES", "TRUE",
+    "UNKNOWN",
+})
+
+
+def _read_tokens(statement: str) -> List[_ReadToken]:
+    tokens = []
+    position = 0
+    limit = len(statement)
+    while position < limit:
+        if statement.startswith("--", position) \
+                or statement.startswith("/*", position):
+            position = _skip_sql_comment(statement, position, limit)
+            continue
+
+        char = statement[position]
+        if char == "'":
+            position = _skip_sql_quoted(statement, position, limit)
+            continue
+        if char in '"`[':
+            closing = "]" if char == "[" else char
+            end = _skip_sql_quoted(statement, position, limit)
+            if end > position and end <= limit \
+                    and statement[end - 1] == closing:
+                contents = statement[position + 1:end - 1]
+                if contents.isdigit() and char == "[":
+                    tokens.append(_ReadToken(
+                        contents, position, end, "index", True,
+                    ))
+                elif not contents.isdigit():
+                    tokens.append(_ReadToken(
+                        contents, position, end, "identifier", True,
+                    ))
+            position = end
+            continue
+
+        identifier = _TABLE_IDENTIFIER_PATTERN.match(statement, position)
+        if identifier is not None:
+            tokens.append(_ReadToken(
+                identifier.group(0), position, identifier.end(),
+                "identifier",
+            ))
+            position = identifier.end()
+            continue
+
+        if char in ".:?,()=<>!+-*/%":
+            tokens.append(_ReadToken(char, position, position + 1,
+                                     "punctuation"))
+        position += 1
+    return tokens
+
+
+def _read_tokens_are_adjacent(statement: str, left: _ReadToken,
+                               right: _ReadToken) -> bool:
+    return _skip_sql_noise(statement, left.end, len(statement)) == right.start
+
+
+def _read_chain_end(statement: str, tokens: List[_ReadToken], start: int
+                    ) -> int:
+    end = start
+    while end + 2 < len(tokens):
+        dot = tokens[end + 1]
+        next_token = tokens[end + 2]
+        if dot.text != "." or next_token.kind != "identifier":
+            break
+        if not _read_tokens_are_adjacent(statement, tokens[end], dot) \
+                or not _read_tokens_are_adjacent(statement, dot, next_token):
+            break
+        end += 2
+    return end
+
+
+def _read_dotted_chains(statement: str, tokens: List[_ReadToken]
+                        ) -> Tuple[Dict[int, int], set]:
+    chains = {}
+    dotted = set()
+    for index, token in enumerate(tokens):
+        if token.kind != "identifier":
+            continue
+        if index > 0 and tokens[index - 1].text == "." \
+                and _read_tokens_are_adjacent(
+                    statement, tokens[index - 1], token,
+                ):
+            continue
+        end = _read_chain_end(statement, tokens, index)
+        if end == index:
+            continue
+        chains[index] = end
+        dotted.update(range(index, end + 1))
+    for index, token in enumerate(tokens):
+        if token.kind != "identifier":
+            continue
+        if index > 0 and tokens[index - 1].text == "." \
+                and _read_tokens_are_adjacent(
+                    statement, tokens[index - 1], token,
+                ):
+            dotted.add(index)
+        if index + 1 < len(tokens) and tokens[index + 1].text == "." \
+                and _read_tokens_are_adjacent(
+                    statement, token, tokens[index + 1],
+                ):
+            dotted.add(index)
+    return chains, dotted
+
+
+def _read_indexed_paths(statement: str, tokens: List[_ReadToken]) -> set:
+    paths = set()
+    for index, token in enumerate(tokens):
+        if token.kind != "index":
+            continue
+        if index > 0 and tokens[index - 1].kind == "identifier" \
+                and _read_tokens_are_adjacent(
+                    statement, tokens[index - 1], token,
+                ):
+            paths.add(index - 1)
+        dot_index = index + 1
+        identifier_index = index + 2
+        if identifier_index < len(tokens) \
+                and tokens[dot_index].text == "." \
+                and tokens[identifier_index].kind == "identifier" \
+                and _read_tokens_are_adjacent(
+                    statement, token, tokens[dot_index],
+                ) \
+                and _read_tokens_are_adjacent(
+                    statement, tokens[dot_index], tokens[identifier_index],
+                ):
+            paths.add(identifier_index)
+    return paths
+
+
+def _read_chain_source_position(statement: str, tokens: List[_ReadToken],
+                                start: int) -> bool:
+    if start == 0:
+        return False
+    previous = tokens[start - 1]
+    if previous.kind != "identifier":
+        return False
+    return previous.text.upper() in {
+        "FETCH", "FROM", "INTO", "JOIN", "LATERAL", "UPDATE", "USING",
+    }
+
+
+def _read_source_aliases(statement: str, tokens: List[_ReadToken],
+                         chains: Dict[int, int]) -> set:
+    aliases = set()
+    for start, end in chains.items():
+        if not _read_chain_source_position(statement, tokens, start):
+            continue
+        next_index = end + 1
+        if next_index >= len(tokens):
+            continue
+        previous = tokens[end]
+        if tokens[next_index].kind == "identifier" \
+                and tokens[next_index].text.upper() == "AS" \
+                and _read_tokens_are_adjacent(
+                    statement, previous, tokens[next_index],
+                ):
+            previous = tokens[next_index]
+            next_index += 1
+        if next_index >= len(tokens) \
+                or tokens[next_index].kind != "identifier" \
+                or not _read_tokens_are_adjacent(
+                    statement, previous, tokens[next_index],
+                ):
+            continue
+        alias = tokens[next_index]
+        if not alias.quoted and (
+                alias.text.upper() in _SQL_TABLE_KEYWORDS
+                or alias.text.upper() in _READ_NON_COLUMN_WORDS
+        ):
+            continue
+        aliases.add(alias.text.casefold())
+    return aliases
+
+
+def _read_assignment_spans(statement: str, verb: str
+                           ) -> List[Tuple[int, int]]:
+    spans = []
+    if verb == "insert":
+        start = _statement_start(statement, verb)
+        if start is None:
+            return spans
+        into_match = _top_level_match(_INTO_WORD, statement, start, len(statement))
+        if into_match is None:
+            return spans
+        candidate = _table_candidate_after(
+            statement, into_match.end(), allow_parenthesis=True,
+        )
+        if candidate is None:
+            return spans
+        opening = _skip_sql_noise(statement, candidate[2], len(statement))
+        if opening >= len(statement) or statement[opening] != "(":
+            return spans
+        closing = _balanced_parenthesis_end(statement, opening)
+        if closing is not None:
+            spans.append((opening + 1, closing))
+        return spans
+
+    if verb not in {"update", "merge"}:
+        return spans
+    start = _statement_start(statement, verb)
+    if start is None:
+        return spans
+    set_match = _top_level_match(_SET_WORD, statement, start, len(statement))
+    if set_match is None:
+        return spans
+    where_match = _top_level_match(
+        _WHERE_WORD, statement, set_match.end(), len(statement),
+    )
+    limit = len(statement) if where_match is None else where_match.start()
+    for assignment_start, assignment_end in _top_level_segments(
+            statement, set_match.end(), limit,
+    ):
+        equals = _top_level_match(
+            _ASSIGNMENT_EQUALS, statement, assignment_start, assignment_end,
+        )
+        if equals is not None:
+            spans.append((assignment_start, equals.start()))
+    return spans
+
+
+def _insert_select_aliases(statement: str):
+    start = _statement_start(statement, "insert")
+    if start is None:
+        return None
+    into_match = _top_level_match(_INTO_WORD, statement, start, len(statement))
+    if into_match is None:
+        return None
+    candidate = _table_candidate_after(
+        statement, into_match.end(), allow_parenthesis=True,
+    )
+    if candidate is None:
+        return None
+    select_match = _top_level_match(
+        _SELECT_WORD, statement, candidate[2], len(statement),
+    )
+    if select_match is None:
+        return None
+    return table_aliases(statement[select_match.start():], "select")
+
+
+def _read_aliases(statement: str, verb: str) -> Dict[str, str]:
+    aliases = table_aliases(statement, verb)
+    if verb == "insert":
+        source_aliases = _insert_select_aliases(statement)
+        if source_aliases is not None:
+            return source_aliases
+    return aliases
+
+
+def _read_token_is_parameter(tokens: List[_ReadToken], index: int,
+                             statement: str) -> bool:
+    token = tokens[index]
+    if token.text.startswith("$") and len(token.text) > 1 \
+            and token.text[1].isdigit():
+        return True
+    if index == 0:
+        return False
+    previous = tokens[index - 1]
+    return previous.text in {":", "$"} \
+        and _read_tokens_are_adjacent(statement, previous, token)
+
+
+def _read_token_is_function(tokens: List[_ReadToken], index: int,
+                            statement: str) -> bool:
+    next_index = index + 1
+    if next_index >= len(tokens) or tokens[next_index].text != "(":
+        return False
+    return _read_tokens_are_adjacent(
+        statement, tokens[index], tokens[next_index],
+    )
+
+
+def _read_token_is_after_as(tokens: List[_ReadToken], index: int,
+                            statement: str) -> bool:
+    if index == 0:
+        return False
+    previous = tokens[index - 1]
+    return previous.kind == "identifier" and previous.text.upper() == "AS" \
+        and _read_tokens_are_adjacent(statement, previous, tokens[index])
+
+
+def _read_token_is_source_name(tokens: List[_ReadToken], index: int,
+                               statement: str) -> bool:
+    if index == 0:
+        return False
+    previous = tokens[index - 1]
+    if previous.kind != "identifier" \
+            or not _read_tokens_are_adjacent(statement, previous, tokens[index]):
+        return False
+    return previous.text.upper() in {
+        "FROM", "INTO", "JOIN", "LATERAL", "UPDATE", "USING",
+    }
+
+
+def read_columns(statement: str, verb: str) -> Tuple[ColumnRead, ...]:
+    normalized_verb = verb.strip().lower()
+    if normalized_verb not in {"select", "insert", "update", "delete", "merge"}:
+        return ()
+
+    aliases = _read_aliases(statement, normalized_verb)
+    if not aliases:
+        return ()
+    tables_seen = []
+    for table in aliases.values():
+        if table not in tables_seen:
+            tables_seen.append(table)
+    single_table = tables_seen[0] if len(tables_seen) == 1 else None
+    alias_keys = set(aliases)
+    alias_keys.update(
+        alias.casefold() for alias in _nested_select_aliases(
+            statement, 0, len(statement),
+        )
+    )
+
+    tokens = _read_tokens(statement)
+    chains, dotted = _read_dotted_chains(statement, tokens)
+    indexed_paths = _read_indexed_paths(statement, tokens)
+    alias_keys.update(_read_source_aliases(statement, tokens, chains))
+    assignment_spans = _read_assignment_spans(statement, normalized_verb)
+    excluded = set()
+    for index, token in enumerate(tokens):
+        if any(start <= token.start and token.end <= end
+               for start, end in assignment_spans):
+            excluded.add(index)
+
+    result = []
+    seen = set()
+    ambiguous_unqualified = False
+
+    def add(table: str, column: str) -> None:
+        pair = (table, column)
+        if pair in seen:
+            return
+        seen.add(pair)
+        result.append(ColumnRead(table, column))
+
+    for index, token in enumerate(tokens):
+        if token.kind != "identifier":
+            continue
+        if token.start > 0 and statement[token.start - 1] == "%":
+            continue
+
+        if index in chains:
+            end = chains[index]
+            if any(item in excluded for item in range(index, end + 1)):
+                continue
+            if _read_chain_source_position(statement, tokens, index):
+                continue
+            parts = [tokens[item].text for item in range(index, end + 1, 2)]
+            qualifier = ".".join(part.casefold() for part in parts[:-1])
+            table = aliases.get(qualifier)
+            if table is not None:
+                add(table, parts[-1])
+            continue
+
+        if index in dotted:
+            continue
+        if index in indexed_paths:
+            continue
+        if index in excluded:
+            continue
+        if _read_token_is_parameter(tokens, index, statement):
+            continue
+        if _read_token_is_function(tokens, index, statement):
+            continue
+        if _read_token_is_after_as(tokens, index, statement):
+            continue
+        if _read_token_is_source_name(tokens, index, statement):
+            continue
+        if token.text.casefold() in alias_keys:
+            continue
+        if not token.quoted and (
+                token.text.upper() in _SQL_TABLE_KEYWORDS
+                or token.text.upper() in _READ_NON_COLUMN_WORDS
+        ):
+            continue
+        if not token.quoted and token.text.casefold() == "new":
+            continue
+        if single_table is None:
+            ambiguous_unqualified = True
+        else:
+            add(single_table, token.text)
+    if ambiguous_unqualified:
+        return ()
+    return tuple(result)
 
 
 def extract(rel_path: str, language: str, text: str,
