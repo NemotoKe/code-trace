@@ -41,6 +41,27 @@ class SqlPersistenceTests(unittest.TestCase):
         finally:
             connection.close()
 
+    @staticmethod
+    def _sql_rows_in_access_id_order(db_path):
+        connection = sqlite3.connect(db_path)
+        try:
+            return connection.execute(
+                "SELECT f.path, s.method_fqn, s.method_kind, s.line, s.verb, "
+                "s.table_name, s.access, s.statement "
+                "FROM sql_accesses AS s JOIN files AS f USING(file_id) "
+                "ORDER BY s.access_id"
+            ).fetchall()
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _insert_file(connection):
+        connection.execute(
+            "INSERT INTO files(path, language, package, lines, sha256, "
+            "is_test, is_generated) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("src/p/Repo.java", "java", "p", 1, "fixture", 0, 0),
+        )
+
     def test_pipeline_persists_select_insert_and_delete_accesses(self):
         from codewiki.index import pipeline
 
@@ -107,6 +128,84 @@ class SqlPersistenceTests(unittest.TestCase):
             [("Orders", "orders"), ("ORDERS", "orders")],
             [(row[5], row[6]) for row in rows],
         )
+
+    def test_pipeline_persists_sql_accesses_in_canonical_order(self):
+        from codewiki.index import pipeline
+
+        source = (
+            "package p;\n"
+            "class Repo {\n"
+            "    void zzz() {\n"
+            "        String read = \"SELECT * FROM Orders\";\n"
+            "    }\n"
+            "    void aaa() {\n"
+            "        String create = \"INSERT INTO AuditLog (id) VALUES (?)\";\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="codewiki-sql-order-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-sql-order-out-") as out:
+            self._write_file(root, "src/p/Repo.java", source)
+            result = pipeline.run(root, out, jobs=1)
+            rows = self._sql_rows_in_access_id_order(result.db_path)
+
+        self.assertEqual(2, result.sql_access_rows)
+        self.assertEqual(
+            [
+                (
+                    "src/p/Repo.java", "p.Repo.aaa", "method", 7, "insert",
+                    "AuditLog", "WRITE", "INSERT INTO AuditLog (id) VALUES (?)",
+                ),
+                (
+                    "src/p/Repo.java", "p.Repo.zzz", "method", 4, "select",
+                    "Orders", "READ", "SELECT * FROM Orders",
+                ),
+            ],
+            rows,
+        )
+        # The later aaa method sorts first by FQN, so the fixture reverses
+        # source order and canonical order by construction.
+        self.assertGreater(rows[0][3], rows[1][3])
+
+    def test_sql_accesses_reject_invalid_access(self):
+        from codewiki.store.db import connect, initialize
+
+        connection = connect(":memory:")
+        try:
+            initialize(connection, repo_root="/repo")
+            self._insert_file(connection)
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO sql_accesses(file_id, method_fqn, method_kind, "
+                    "line, verb, table_name, table_key, access, statement) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        1, "p.Repo.run", "method", 2, "select", "Orders",
+                        "orders", "MAYBE", "SELECT * FROM Orders",
+                    ),
+                )
+        finally:
+            connection.close()
+
+    def test_sql_accesses_reject_invalid_verb(self):
+        from codewiki.store.db import connect, initialize
+
+        connection = connect(":memory:")
+        try:
+            initialize(connection, repo_root="/repo")
+            self._insert_file(connection)
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO sql_accesses(file_id, method_fqn, method_kind, "
+                    "line, verb, table_name, table_key, access, statement) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        1, "p.Repo.run", "method", 2, "maybe", "Orders",
+                        "orders", "READ", "SELECT * FROM Orders",
+                    ),
+                )
+        finally:
+            connection.close()
 
     def test_repeated_indexing_has_identical_sql_access_rows(self):
         from codewiki.index import pipeline

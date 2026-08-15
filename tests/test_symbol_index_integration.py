@@ -65,7 +65,22 @@ def logical_database_rows(path):
             "SELECT key, value FROM meta WHERE key IN "
             "('schema_version', 'repo_root') ORDER BY key"
         ).fetchall()
-        return files, symbols, meta
+        calls = connection.execute(
+            "SELECT call_id, file_id, caller_fqn, caller_kind, line, form, "
+            "receiver, name, owner_fqn, target_fqn, confidence, reason, "
+            "candidates FROM calls ORDER BY call_id"
+        ).fetchall()
+        supertypes = connection.execute(
+            "SELECT supertype_id, file_id, owner_fqn, line, relation, raw, name, "
+            "target_fqn, rule, outcome, candidates FROM supertypes "
+            "ORDER BY supertype_id"
+        ).fetchall()
+        sql_accesses = connection.execute(
+            "SELECT access_id, file_id, method_fqn, method_kind, line, verb, "
+            "table_name, table_key, access, statement FROM sql_accesses "
+            "ORDER BY access_id"
+        ).fetchall()
+        return files, symbols, meta, calls, supertypes, sql_accesses
     finally:
         connection.close()
 
@@ -191,8 +206,11 @@ class SymbolIndexIntegrationTests(unittest.TestCase):
                     root,
                     "src/pkg%03d/Type%03d.java" % (index % 10, index),
                     "package pkg%03d;\n" % (index % 10)
-                    + "public class Type%03d {\n" % index
-                    + "  void method(String value) {}\n"
+                    + "public class Type%03d extends Base%03d {\n" % (index, index)
+                    + "  void method(String value) {\n"
+                    + "    value.trim();\n"
+                    + "    String query = \"SELECT * FROM Table%03d\";\n" % index
+                    + "  }\n"
                     + "}\n",
                 )
 
@@ -210,6 +228,9 @@ class SymbolIndexIntegrationTests(unittest.TestCase):
             self.assertEqual(serial_rows, parallel_rows)
             self.assertEqual(workload, len(parallel_rows[0]))
             self.assertEqual(workload * 2, len(parallel_rows[1]))
+            self.assertEqual(workload, len(parallel_rows[3]))
+            self.assertEqual(workload, len(parallel_rows[4]))
+            self.assertEqual(workload, len(parallel_rows[5]))
             connection = sqlite3.connect(os.path.join(two, "index.sqlite3"))
             try:
                 self.assertEqual(
