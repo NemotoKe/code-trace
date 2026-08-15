@@ -128,6 +128,51 @@ class EntrypointIntegrationTests(unittest.TestCase):
             [row[1] for row in rows],
         )
 
+    def test_main_signature_rejects_int_no_args_and_currently_rejects_varargs(self):
+        sources = {
+            "src/entry/IntMain.java": (
+                "package entry;\n"
+                "\n"
+                "public class IntMain {\n"
+                "    public static void main(int count) {}\n"
+                "}\n"
+            ),
+            "src/entry/NoArgMain.java": (
+                "package entry;\n"
+                "\n"
+                "public class NoArgMain {\n"
+                "    public void main() {}\n"
+                "}\n"
+            ),
+            "src/entry/VarargsMain.java": (
+                "package entry;\n"
+                "\n"
+                "public class VarargsMain {\n"
+                "    public static void main(String... args) {}\n"
+                "}\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory(prefix="codewiki-main-signature-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-main-signature-out-") as out:
+            for relative_path, source in sources.items():
+                _write_file(root, relative_path, source)
+
+            from codewiki.index import pipeline
+
+            result = pipeline.run(root, out, jobs=1)
+            connection = sqlite3.connect(result.db_path)
+            try:
+                rows = connection.execute(
+                    "SELECT f.path, e.method_fqn, e.kind, e.reason, e.line "
+                    "FROM entrypoints AS e JOIN files AS f USING(file_id) "
+                    "ORDER BY e.entrypoint_id"
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual([], rows)
+        self.assertEqual(0, result.entrypoints_found)
+
     def test_external_httpservlet_marker_and_transitive_servlet_chain(self):
         sources = {
             "src/p/DirectServlet.java": (
