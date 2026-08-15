@@ -4,6 +4,130 @@ import unittest
 
 
 class JavaSqlTests(unittest.TestCase):
+    def test_read_columns_correction_cases(self):
+        from codewiki.index.sql import ColumnRead, read_columns
+
+        cases = [
+            (
+                "select name[0].given[0] from Patient limit 5",
+                "select",
+                (),
+            ),
+            (
+                "SELECT %s FROM MPI_LINK ml WHERE ml.TARGET_TYPE = ?",
+                "select",
+                (ColumnRead("MPI_LINK", "TARGET_TYPE"),),
+            ),
+            (
+                "SELECT TOP (%d) x FROM t",
+                "select",
+                (ColumnRead("t", "x"),),
+            ),
+            (
+                'SELECT "my column" FROM t',
+                "select",
+                (ColumnRead("t", "my column"),),
+            ),
+            (
+                "SELECT [Order Date] FROM t",
+                "select",
+                (ColumnRead("t", "Order Date"),),
+            ),
+            (
+                "SELECT * FROM FOO WHERE t = '123'",
+                "select",
+                (ColumnRead("FOO", "t"),),
+            ),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, read_columns(statement, verb))
+
+    def test_read_columns_case_table(self):
+        from codewiki.index.sql import ColumnRead, read_columns
+
+        cases = [
+            (
+                "SELECT id, status FROM orders",
+                "select",
+                (
+                    ColumnRead("orders", "id"),
+                    ColumnRead("orders", "status"),
+                ),
+            ),
+            (
+                "SELECT * FROM orders",
+                "select",
+                (),
+            ),
+            (
+                "SELECT count(*) FROM orders",
+                "select",
+                (),
+            ),
+            (
+                "SELECT o.id FROM orders o WHERE o.status = ?",
+                "select",
+                (
+                    ColumnRead("orders", "id"),
+                    ColumnRead("orders", "status"),
+                ),
+            ),
+            (
+                "SELECT a.x FROM a JOIN b ON a.id = b.id",
+                "select",
+                (
+                    ColumnRead("a", "x"),
+                    ColumnRead("a", "id"),
+                    ColumnRead("b", "id"),
+                ),
+            ),
+            (
+                "SELECT x FROM a JOIN b ON a.id = b.id",
+                "select",
+                (),
+            ),
+            (
+                "UPDATE orders SET status = ? WHERE status = 'NEW'",
+                "update",
+                (ColumnRead("orders", "status"),),
+            ),
+            (
+                "DELETE FROM orders WHERE id = ?",
+                "delete",
+                (ColumnRead("orders", "id"),),
+            ),
+            (
+                "INSERT INTO t (a) SELECT b FROM s",
+                "insert",
+                (ColumnRead("s", "b"),),
+            ),
+            (
+                "SELECT d FROM TagDefinition d WHERE d.myId IN "
+                "(SELECT t.myTagId FROM ResourceTag t)",
+                "select",
+                (
+                    ColumnRead("TagDefinition", "myId"),
+                    ColumnRead("ResourceTag", "myTagId"),
+                ),
+            ),
+            (
+                "SELECT new ca.uhn.fhir.Dto(e.myId) FROM E e",
+                "select",
+                (ColumnRead("E", "myId"),),
+            ),
+            (
+                "SELECT * FROM (",
+                "select",
+                (),
+            ),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, read_columns(statement, verb))
+
     def test_written_columns_case_table(self):
         from codewiki.index.sql import ColumnWrite, written_columns
 
