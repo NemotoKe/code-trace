@@ -9,6 +9,7 @@ from typing import Callable, Dict, Optional
 from .. import parallel
 from ..config import Config
 from ..store import db
+from . import annotation_refs
 from . import callgraph, calls, declarations
 from . import imports as java_imports
 from . import resolution, scan, sql, supertypes, symbols
@@ -19,19 +20,22 @@ def _analyze_java_file(item):
     try:
         text = scan.read_text(root, path)
     except OSError:
-        return path, None, [], [], [], [], [], []
+        return path, None, [], [], [], [], [], [], []
     package = symbols.package_of(text)
     if is_generated:
-        return path, package, [], [], [], [], [], []
+        return path, package, [], [], [], [], [], [], []
     file_symbols = symbols.extract(path, language, text)
     file_calls = calls.extract(path, language, text, file_symbols)
     file_declarations = declarations.extract(path, language, text, file_symbols)
     file_imports = java_imports.parse_imports(path, text)
     file_supertypes = supertypes.extract(path, language, text, file_symbols)
     file_sql_statements = sql.extract(path, language, text, file_symbols)
+    file_annotation_refs = annotation_refs.extract(
+        path, language, text, file_symbols
+    )
     return (
         path, package, file_symbols, file_imports, file_supertypes,
-        file_calls, file_declarations, file_sql_statements,
+        file_calls, file_declarations, file_sql_statements, file_annotation_refs,
     )
 
 
@@ -59,6 +63,7 @@ class PipelineResult:
     sql_statements_found: int = 0
     sql_access_rows: int = 0
     sql_column_rows: int = 0
+    annotations_found: int = 0
 
 
 def run(root: str, out_dir: str, config: Optional[Config] = None,
@@ -91,6 +96,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         extracted = []
         call_sites = []
         sql_statements = []
+        annotations = []
         declaration_rows = []
         parsed_imports = []
         supertype_refs = {}
@@ -98,6 +104,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         for (
             path, package, file_symbols, file_imports, file_refs,
             file_calls, file_declarations, file_sql_statements,
+            file_annotation_refs,
         ) in analyses:
             packages[path] = package
             if file_symbols:
@@ -106,6 +113,8 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
                 call_sites.extend(file_calls)
             if file_sql_statements:
                 sql_statements.extend(file_sql_statements)
+            if file_annotation_refs:
+                annotations.extend(file_annotation_refs)
             if file_declarations:
                 declaration_rows.extend(file_declarations)
             if path in analyzable_paths:
@@ -281,6 +290,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         calls=call_rows,
         sql_accesses=sql_accesses,
         sql_column_accesses=sql_column_accesses,
+        annotations=annotations,
     )
     now = time.perf_counter()
     timings["persist"] = round(now - previous, 3)
@@ -293,4 +303,5 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         supertype_outcomes, supertype_rate, len(call_sites), call_row_count,
         call_forms, call_confidences, call_resolution_rate,
         len(sql_statements), len(sql_accesses), len(sql_column_accesses),
+        len(annotations),
     )
