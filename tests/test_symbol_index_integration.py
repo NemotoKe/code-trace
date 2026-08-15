@@ -244,7 +244,7 @@ class SymbolIndexIntegrationTests(unittest.TestCase):
 
     def test_query_layer_boundary_is_structural_and_database_only(self):
         for package, filenames in (
-                (("codewiki", "query"), ("symbols.py", "types.py", "calls.py")),
+                (("codewiki", "query"), ("symbols.py", "types.py", "calls.py", "sql.py")),
                 (("codewiki", "store"), ("db.py",)),
         ):
             for filename in filenames:

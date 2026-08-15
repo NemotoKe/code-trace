@@ -8,6 +8,7 @@ import sys
 from .index import pipeline
 from .query.calls import callees as query_callees
 from .query.calls import callers as query_callers
+from .query.sql import accesses as query_accesses
 from .query.symbols import QueryError, search_path
 from .query.types import TypeQueryError, resolve_type_path, subtypes
 
@@ -51,6 +52,14 @@ def _parser():
     callers.add_argument("--limit", type=_nonnegative, default=None)
     callers.add_argument("--confirmed", action="store_true")
     callers.add_argument("--direct", action="store_true")
+    table = commands.add_parser("table")
+    table.add_argument("table")
+    table.add_argument("--out", default=None)
+    table.add_argument("--json", action="store_true")
+    table.add_argument("--limit", type=_nonnegative, default=None)
+    access = table.add_mutually_exclusive_group()
+    access.add_argument("--read", dest="access", action="store_const", const="READ")
+    access.add_argument("--write", dest="access", action="store_const", const="WRITE")
     callees = commands.add_parser("callees")
     callees.add_argument("fqn")
     callees.add_argument("--out", default=None)
@@ -236,6 +245,39 @@ def _callers(args):
     return 0
 
 
+def _table(args):
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    results = query_accesses(
+        os.path.join(out, "index.sqlite3"), args.table, args.access
+    )
+    truncated = args.limit is not None and len(results) > max(0, args.limit)
+    if args.limit is not None:
+        results = results[:max(0, args.limit)]
+    read = sum(item.access == "READ" for item in results)
+    write = sum(item.access == "WRITE" for item in results)
+    if args.json:
+        print(json.dumps({
+            "table": args.table,
+            "access": args.access,
+            "count": len(results),
+            "truncated": truncated,
+            "read": read,
+            "write": write,
+            "results": [item.as_dict() for item in results],
+        }, ensure_ascii=False, separators=(",", ":")))
+        return 0
+    for item in results:
+        statement = " ".join(item.statement.split())[:100]
+        location = "%s:%d" % (item.path, item.line)
+        print("%s  %s  %s  %s  %s" % (
+            item.access, item.verb, item.method_fqn, location, statement,
+        ))
+    if truncated:
+        print("truncated: limit reached")
+    print("%d accesses (%d read, %d write)" % (len(results), read, write))
+    return 0
+
+
 def _callees(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     results = query_callees(
@@ -289,6 +331,8 @@ def main(argv=None):
             return _impls(args)
         if args.command == "callers":
             return _callers(args)
+        if args.command == "table":
+            return _table(args)
         if args.command == "callees":
             return _callees(args)
         return _resolve_type(args)
