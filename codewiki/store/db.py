@@ -7,7 +7,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import List, Optional
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 _SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 _IMPORT_FORMS = ("single", "wildcard", "static_single", "static_wildcard")
 _IMPORT_OUTCOMES = ("resolved", "external", "unresolved", "excluded")
@@ -32,6 +32,9 @@ _INDEX_DEFINITIONS = (
     ("idx_sql_column_accesses_column", "sql_column_accesses(table_key, column_key)"),
     ("idx_sql_column_accesses_method", "sql_column_accesses(method_fqn)"),
     ("idx_sql_column_accesses_file", "sql_column_accesses(file_id)"),
+    ("idx_annotations_simple_name", "annotations(simple_name)"),
+    ("idx_annotations_owner", "annotations(owner_fqn)"),
+    ("idx_annotations_file", "annotations(file_id)"),
 )
 
 
@@ -70,7 +73,8 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
                 generated_at: Optional[str] = None, skipped=None,
                 parallel_jobs: Optional[int] = None, imports=None,
                 resolutions=None, supertypes=None, calls=None,
-                sql_accesses=None, sql_column_accesses=None) -> None:
+                sql_accesses=None, sql_column_accesses=None,
+                annotations=None) -> None:
     """Write a complete fresh index with IDs assigned from sorted input rows."""
     parent = os.path.dirname(os.path.abspath(db_path))
     if not os.path.isdir(parent):
@@ -115,6 +119,7 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
         calls = list(calls or [])
         sql_accesses = list(sql_accesses or [])
         sql_column_accesses = list(sql_column_accesses or [])
+        annotations = list(annotations or [])
         import_forms = {form: 0 for form in _IMPORT_FORMS}
         import_outcomes = {outcome: 0 for outcome in _IMPORT_OUTCOMES}
         for record, resolution in imports:
@@ -376,6 +381,29 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
                 for item in sorted(
                     sql_column_accesses, key=sql_column_access_sort_key
                 )
+            )
+        )
+
+        def annotation_row(annotation):
+            return (
+                file_ids[annotation.path], annotation.owner_fqn,
+                annotation.owner_kind, annotation.name,
+                annotation.name.rsplit(".", 1)[-1], annotation.line,
+                annotation.raw,
+            )
+
+        def annotation_sort_key(annotation):
+            return (
+                annotation.path, annotation.owner_fqn, annotation.owner_kind,
+                annotation.line, annotation.name, annotation.raw,
+            )
+
+        connection.executemany(
+            "INSERT INTO annotations(file_id, owner_fqn, owner_kind, name, "
+            "simple_name, line, raw) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                annotation_row(annotation)
+                for annotation in sorted(annotations, key=annotation_sort_key)
             )
         )
         for index_name, definition in _INDEX_DEFINITIONS:

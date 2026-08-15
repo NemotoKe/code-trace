@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS sql_column_accesses (
     statement TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS annotations (
+    annotation_id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    owner_fqn TEXT NOT NULL,
+    owner_kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    simple_name TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    raw TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_fqn);
 CREATE INDEX IF NOT EXISTS idx_calls_target ON calls(target_fqn);
 CREATE INDEX IF NOT EXISTS idx_calls_name ON calls(name);
@@ -130,6 +141,12 @@ CREATE INDEX IF NOT EXISTS idx_sql_column_accesses_method
     ON sql_column_accesses(method_fqn);
 CREATE INDEX IF NOT EXISTS idx_sql_column_accesses_file
     ON sql_column_accesses(file_id);
+CREATE INDEX IF NOT EXISTS idx_annotations_simple_name
+    ON annotations(simple_name);
+CREATE INDEX IF NOT EXISTS idx_annotations_owner
+    ON annotations(owner_fqn);
+CREATE INDEX IF NOT EXISTS idx_annotations_file
+    ON annotations(file_id);
 
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_fqn ON symbols(fqn);
