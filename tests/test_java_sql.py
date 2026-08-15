@@ -225,6 +225,100 @@ class JavaSqlTests(unittest.TestCase):
             with self.subTest(statement=statement, verb=verb):
                 self.assertEqual(expected, table_accesses(statement, verb))
 
+    def test_table_aliases_case_table(self):
+        from codewiki.index.sql import table_aliases
+
+        cases = [
+            (
+                "SELECT * FROM orders o",
+                "select",
+                {"o": "orders", "orders": "orders"},
+            ),
+            (
+                "SELECT * FROM Orders",
+                "select",
+                {"orders": "Orders"},
+            ),
+            (
+                "SELECT * FROM orders AS o",
+                "select",
+                {"o": "orders", "orders": "orders"},
+            ),
+            (
+                "SELECT * FROM a x JOIN b y ON x.id = y.id",
+                "select",
+                {"x": "a", "a": "a", "y": "b", "b": "b"},
+            ),
+            (
+                "SELECT * FROM a, b",
+                "select",
+                {"a": "a", "b": "b"},
+            ),
+            (
+                "UPDATE Batch2JobInstanceEntity e SET e.myStatus = ?",
+                "update",
+                {
+                    "e": "Batch2JobInstanceEntity",
+                    "batch2jobinstanceentity": "Batch2JobInstanceEntity",
+                },
+            ),
+            (
+                "DELETE FROM Batch2WorkChunkEntity e WHERE e.myId = ?",
+                "delete",
+                {
+                    "e": "Batch2WorkChunkEntity",
+                    "batch2workchunkentity": "Batch2WorkChunkEntity",
+                },
+            ),
+            (
+                "INSERT INTO t (c) VALUES (?)",
+                "insert",
+                {"t": "t"},
+            ),
+            (
+                "MERGE INTO orders o USING staging s ON (o.id = s.id)",
+                "merge",
+                {
+                    "o": "orders",
+                    "orders": "orders",
+                    "s": "staging",
+                    "staging": "staging",
+                },
+            ),
+            (
+                "SELECT * FROM sch.orders o",
+                "select",
+                {"o": "sch.orders", "sch.orders": "sch.orders"},
+            ),
+            (
+                "SELECT * FROM (SELECT id FROM orders) d",
+                "select",
+                {"orders": "orders"},
+            ),
+            (
+                "SELECT x FROM a WHERE y IN (SELECT z FROM b bb)",
+                "select",
+                {"a": "a", "b": "b", "bb": "b"},
+            ),
+            (
+                "SELECT * FROM (",
+                "select",
+                {},
+            ),
+        ]
+
+        for statement, verb, expected in cases:
+            with self.subTest(statement=statement, verb=verb):
+                self.assertEqual(expected, table_aliases(statement, verb))
+
+    def test_table_aliases_omits_ambiguous_qualifiers(self):
+        from codewiki.index.sql import table_aliases
+
+        self.assertEqual(
+            {"a": "a", "b": "b"},
+            table_aliases("SELECT * FROM a x JOIN b x", "select"),
+        )
+
     def test_tables_extracts_plain_select_target(self):
         from codewiki.index.sql import tables
 
