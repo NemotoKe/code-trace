@@ -358,22 +358,22 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
         )
 
         def sql_column_access_row(item):
-            statement, column = item
+            statement, column, access = item
             table_name = column.table
             column_name = column.column
             return (
                 file_ids[statement.path], statement.enclosing_fqn,
                 statement.enclosing_kind, statement.line, statement.verb,
                 table_name, table_name.casefold(), column_name,
-                column_name.casefold(), "WRITE", statement.statement,
+                column_name.casefold(), access, statement.statement,
             )
 
         def sql_column_access_sort_key(item):
-            statement, column = item
+            statement, column, access = item
             return (
                 statement.path, statement.enclosing_fqn,
                 statement.enclosing_kind, statement.line, statement.verb,
-                column.table, column.column, "WRITE", statement.statement,
+                column.table, column.column, access, statement.statement,
             )
 
         connection.executemany(

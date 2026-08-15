@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -34,28 +33,6 @@ def write_file(root, relative_path, contents):
         stream.write(contents)
 
 
-def add_column_access(db_path, path, method_fqn, line, verb, table,
-                      column, access, statement):
-    connection = sqlite3.connect(db_path)
-    try:
-        file_id = connection.execute(
-            "SELECT file_id FROM files WHERE path = ?", (path,)
-        ).fetchone()[0]
-        connection.execute(
-            "INSERT INTO sql_column_accesses("
-            "file_id, method_fqn, method_kind, line, verb, table_name, "
-            "table_key, column_name, column_key, access, statement) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                file_id, method_fqn, "method", line, verb, table,
-                table.casefold(), column, column.casefold(), access, statement,
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-
 class ColumnSqlQueryTests(unittest.TestCase):
     def test_column_accesses_matches_casefolds_filters_and_unknown_columns(self):
         source = (
@@ -82,11 +59,6 @@ class ColumnSqlQueryTests(unittest.TestCase):
             write_file(root, "src/p/Repository.java", source)
             write_file(root, "src/p/ZReader.java", reader)
             result = pipeline.run(root, out, jobs=1)
-            add_column_access(
-                result.db_path, "src/p/ZReader.java", "p.ZReader.read", 4,
-                "select", "Orders", "Status", "READ",
-                "SELECT STATUS FROM Orders",
-            )
 
             expected = [
                 ColumnAccessResult(
@@ -101,7 +73,7 @@ class ColumnSqlQueryTests(unittest.TestCase):
                 ),
                 ColumnAccessResult(
                     "p.ZReader.read", "method", "src/p/ZReader.java", 4,
-                    "select", "Orders", "Status", "READ",
+                    "select", "Orders", "STATUS", "READ",
                     "SELECT STATUS FROM Orders",
                 ),
             ]
@@ -189,11 +161,6 @@ class ColumnCliIntegrationTests(unittest.TestCase):
 
             indexed = run_cli("index", root, "--out", out, "--quiet")
             self.assertEqual(0, indexed.returncode, indexed.stderr)
-            add_column_access(
-                os.path.join(out, "index.sqlite3"), "src/p/ZOrderReader.java",
-                "p.ZOrderReader.findById", 4, "select", "ORDERS", "STATUS",
-                "READ", "SELECT STATUS FROM ORDERS WHERE ID = ?",
-            )
 
             queried = run_cli("column", "ORDERS.STATUS", "--out", out, "--json")
             self.assertEqual(0, queried.returncode, queried.stderr)
