@@ -64,7 +64,7 @@ class LayoutAndSchemaTests(unittest.TestCase):
         self.assertTrue(any("name" in index for index in indexes))
         self.assertTrue(any("fqn" in index for index in indexes))
         self.assertTrue(any("owner" in index for index in indexes))
-        self.assertEqual("2", connection.execute(
+        self.assertEqual("3", connection.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
         ).fetchone()[0])
 

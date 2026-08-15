@@ -7,7 +7,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import List, Optional
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 _SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 _IMPORT_FORMS = ("single", "wildcard", "static_single", "static_wildcard")
 _IMPORT_OUTCOMES = ("resolved", "external", "unresolved", "excluded")
@@ -29,6 +29,9 @@ _INDEX_DEFINITIONS = (
     ("idx_sql_accesses_table", "sql_accesses(table_key)"),
     ("idx_sql_accesses_method", "sql_accesses(method_fqn)"),
     ("idx_sql_accesses_file", "sql_accesses(file_id)"),
+    ("idx_sql_column_accesses_column", "sql_column_accesses(table_key, column_key)"),
+    ("idx_sql_column_accesses_method", "sql_column_accesses(method_fqn)"),
+    ("idx_sql_column_accesses_file", "sql_column_accesses(file_id)"),
 )
 
 
@@ -67,7 +70,7 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
                 generated_at: Optional[str] = None, skipped=None,
                 parallel_jobs: Optional[int] = None, imports=None,
                 resolutions=None, supertypes=None, calls=None,
-                sql_accesses=None) -> None:
+                sql_accesses=None, sql_column_accesses=None) -> None:
     """Write a complete fresh index with IDs assigned from sorted input rows."""
     parent = os.path.dirname(os.path.abspath(db_path))
     if not os.path.isdir(parent):
@@ -111,6 +114,7 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
         supertypes = list(supertypes or [])
         calls = list(calls or [])
         sql_accesses = list(sql_accesses or [])
+        sql_column_accesses = list(sql_column_accesses or [])
         import_forms = {form: 0 for form in _IMPORT_FORMS}
         import_outcomes = {outcome: 0 for outcome in _IMPORT_OUTCOMES}
         for record, resolution in imports:
@@ -341,6 +345,37 @@ def write_index(db_path: str, repo_root: str, files: List, symbols: List,
             (
                 sql_access_row(item)
                 for item in sorted(sql_accesses, key=sql_access_sort_key)
+            )
+        )
+
+        def sql_column_access_row(item):
+            statement, column = item
+            table_name = column.table
+            column_name = column.column
+            return (
+                file_ids[statement.path], statement.enclosing_fqn,
+                statement.enclosing_kind, statement.line, statement.verb,
+                table_name, table_name.casefold(), column_name,
+                column_name.casefold(), "WRITE", statement.statement,
+            )
+
+        def sql_column_access_sort_key(item):
+            statement, column = item
+            return (
+                statement.path, statement.enclosing_fqn,
+                statement.enclosing_kind, statement.line, statement.verb,
+                column.table, column.column, "WRITE", statement.statement,
+            )
+
+        connection.executemany(
+            "INSERT INTO sql_column_accesses(file_id, method_fqn, method_kind, "
+            "line, verb, table_name, table_key, column_name, column_key, "
+            "access, statement) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                sql_column_access_row(item)
+                for item in sorted(
+                    sql_column_accesses, key=sql_column_access_sort_key
+                )
             )
         )
         for index_name, definition in _INDEX_DEFINITIONS:

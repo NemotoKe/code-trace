@@ -58,6 +58,7 @@ class PipelineResult:
     call_resolution_rate: float = 0.0
     sql_statements_found: int = 0
     sql_access_rows: int = 0
+    sql_column_rows: int = 0
 
 
 def run(root: str, out_dir: str, config: Optional[Config] = None,
@@ -120,6 +121,10 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     for statement in sql_statements:
         for access in sql.table_accesses(statement.statement, statement.verb):
             sql_accesses.append((statement, access))
+    sql_column_accesses = []
+    for statement in sql_statements:
+        for column in sql.written_columns(statement.statement, statement.verb):
+            sql_column_accesses.append((statement, column))
 
     for record in records:
         if record.language == "java":
@@ -275,6 +280,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         supertypes=supertype_rows,
         calls=call_rows,
         sql_accesses=sql_accesses,
+        sql_column_accesses=sql_column_accesses,
     )
     now = time.perf_counter()
     timings["persist"] = round(now - previous, 3)
@@ -286,5 +292,5 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         import_outcomes, internal_rate, len(supertype_rows),
         supertype_outcomes, supertype_rate, len(call_sites), call_row_count,
         call_forms, call_confidences, call_resolution_rate,
-        len(sql_statements), len(sql_accesses),
+        len(sql_statements), len(sql_accesses), len(sql_column_accesses),
     )
