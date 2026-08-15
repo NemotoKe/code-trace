@@ -11,6 +11,7 @@ from ..config import Config
 from ..store import db
 from . import annotation_refs
 from . import callgraph, calls, declarations
+from . import entrypoints
 from . import imports as java_imports
 from . import resolution, scan, sql, supertypes, symbols
 
@@ -64,6 +65,7 @@ class PipelineResult:
     sql_access_rows: int = 0
     sql_column_rows: int = 0
     annotations_found: int = 0
+    entrypoints_found: int = 0
 
 
 def run(root: str, out_dir: str, config: Optional[Config] = None,
@@ -206,6 +208,11 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     timings["supertypes"] = round(now - previous, 3)
     previous = now
 
+    emit("entrypoints", "classifying entry points")
+    entrypoint_rows = entrypoints.classify(
+        extracted, supertype_rows, annotations
+    )
+
     emit("calls", "resolving Java calls")
     members_by_owner_values = {}
     fields_by_owner_values = {}
@@ -291,6 +298,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         sql_accesses=sql_accesses,
         sql_column_accesses=sql_column_accesses,
         annotations=annotations,
+        entrypoints=entrypoint_rows,
     )
     now = time.perf_counter()
     timings["persist"] = round(now - previous, 3)
@@ -303,5 +311,5 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         supertype_outcomes, supertype_rate, len(call_sites), call_row_count,
         call_forms, call_confidences, call_resolution_rate,
         len(sql_statements), len(sql_accesses), len(sql_column_accesses),
-        len(annotations),
+        len(annotations), len(entrypoint_rows),
     )
