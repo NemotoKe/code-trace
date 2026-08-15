@@ -135,7 +135,9 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     sql_column_accesses = []
     for statement in sql_statements:
         for column in sql.written_columns(statement.statement, statement.verb):
-            sql_column_accesses.append((statement, column))
+            sql_column_accesses.append((statement, column, "WRITE"))
+        for column in sql.read_columns(statement.statement, statement.verb):
+            sql_column_accesses.append((statement, column, "READ"))
 
     for record in records:
         if record.language == "java":

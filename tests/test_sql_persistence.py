@@ -205,6 +205,86 @@ class SqlPersistenceTests(unittest.TestCase):
             rows,
         )
 
+    def test_pipeline_persists_read_and_written_sql_columns(self):
+        from codewiki.index import pipeline
+
+        source = (
+            "package p;\n"
+            "class OrderRepository {\n"
+            "    void execute() {\n"
+            "        String update = \"UPDATE ORDERS SET STATUS = ? WHERE ID = ?\";\n"
+            "        String select = \"SELECT STATUS FROM ORDERS WHERE ID = ?\";\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="codewiki-sql-read-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-sql-read-out-") as out:
+            self._write_file(root, "src/p/OrderRepository.java", source)
+            result = pipeline.run(root, out, jobs=1)
+            rows = self._column_rows(result.db_path)
+
+        self.assertEqual(4, result.sql_column_rows)
+        self.assertEqual(
+            [
+                ("ORDERS", "ID", "READ"),
+                ("ORDERS", "STATUS", "WRITE"),
+                ("ORDERS", "ID", "READ"),
+                ("ORDERS", "STATUS", "READ"),
+            ],
+            [(row[5], row[7], row[9]) for row in rows],
+        )
+
+    def test_pipeline_keeps_write_and_read_rows_for_same_column(self):
+        from codewiki.index import pipeline
+
+        source = (
+            "package p;\n"
+            "class Repository {\n"
+            "    void execute() {\n"
+            "        String update = \"UPDATE t SET a = ? WHERE a = 1\";\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="codewiki-sql-dual-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-sql-dual-out-") as out:
+            self._write_file(root, "src/p/Repository.java", source)
+            result = pipeline.run(root, out, jobs=1)
+            rows = self._column_rows(result.db_path)
+
+        self.assertEqual(2, result.sql_column_rows)
+        self.assertEqual(
+            [("t", "a", "READ"), ("t", "a", "WRITE")],
+            [(row[5], row[7], row[9]) for row in rows],
+        )
+
+    def test_pipeline_preserves_raw_multiline_sql_for_column_reads(self):
+        from codewiki.index import pipeline
+
+        source = (
+            "package p;\n"
+            "class Repository {\n"
+            "    void execute() {\n"
+            "        String select = \"\"\"\n"
+            "            SELECT STATUS\n"
+            "            FROM ORDERS -- keep parsing the next line\n"
+            "            WHERE ID = ?\n"
+            "            \"\"\";\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="codewiki-sql-raw-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-sql-raw-out-") as out:
+            self._write_file(root, "src/p/Repository.java", source)
+            result = pipeline.run(root, out, jobs=1)
+            rows = self._column_rows(result.db_path)
+
+        self.assertEqual(2, result.sql_column_rows)
+        self.assertEqual(
+            [("ORDERS", "ID", "READ"), ("ORDERS", "STATUS", "READ")],
+            [(row[5], row[7], row[9]) for row in rows],
+        )
+        self.assertIn("\n", rows[0][10])
+
     def test_pipeline_folds_table_and_column_keys_case(self):
         from codewiki.index import pipeline
 
