@@ -120,26 +120,24 @@ GROUP BY するのは値の集合がコードで固定されている列だけ�
 **このツールの存在理由はこれ。ここが 0 なら他の数字が良くても意味がない。**
 
 ```bash
-IDX="$RUN/idx"
-sqlite3 "$IDX/index.sqlite3" \
-  "SELECT DISTINCT method_fqn FROM sql_accesses WHERE method_fqn <> '' ORDER BY method_fqn" \
-  > "$RUN/sql-methods.txt"          # ← FQN を含む。持ち出さない
-
-: > "$RUN/reach-counts.txt"
-while read -r FQN; do
-  python3 -m codewiki trace-up "$FQN" --entrypoints --json --out "$IDX" 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' >> "$RUN/reach-counts.txt"
-done < "$RUN/sql-methods.txt"
-
-awk '{ t++; if ($1+0 > 0) h++ } END { printf "methods=%d reached=%d rate=%.1f%%\n", t, h+0, 100*(h+0)/t }' \
-  "$RUN/reach-counts.txt"           # ← この 1 行だけ持ち出す
+python3 -m codewiki reach --out "$RUN/idx" --json > "$RUN/reach.json"
+python3 -m codewiki reach --out "$RUN/idx" --depth 16 --json > "$RUN/reach-16.json"
 ```
 
-HAPI の 273 メソッドで 16 秒。`reach-counts.txt` は数字だけなので持ち出してよい。
+対象は `sql_accesses` に出てくるメソッド全部。HAPI の 273 メソッドで 0.4 秒。
+出力は件数だけなので**そのまま持ち出せる**。
 
-**深さの既定値は 8 で、HAPI ではすでに上限に当たっている**（付録C）。上限に当たると
-`truncated` が true になり、その先に入口があっても見えない。**まず既定の 8 で測り、
-続けて `--depth 16` でもう一度測る。** 数字が動くなら、それは到達率ではなく深さの問題。
+| キー | 読み方 |
+|---|---|
+| `reach_rate` | **この 1 つが改善の指標。** 他の数字が良くてもここが 0 なら意味がない |
+| `no_caller` | 呼び出し元が 1 つも無いメソッド数。ここが大きいなら問題は入口側ではなく呼び出し辺 |
+| `truncated` | 深さ上限に当たった数。**0 でないなら `--depth` を上げた結果と比べる** |
+| `depth_histogram` | 到達したものの最短深さ。右に偏るほど経路が長い |
+| `entrypoint_kind_hits` | どの種類の入口から届いたか。`other` は自分で足した kind |
+
+**必ず 2 つの深さで測る。** 既定は 8 で、HAPI ではすでに上限に当たっている（付録C）。
+上限に当たるとその先に入口があっても見えない。`--depth 16` で数字が動くなら、それは
+到達率の問題ではなく深さの問題。
 
 **到達率が低いとき、原因はほぼ呼び出し辺にある。** 3-3 の 2 つの数字が上限を決めている。
 
@@ -148,9 +146,10 @@ HAPI の 273 メソッドで 16 秒。`reach-counts.txt` は数字だけなの�
 上に辿れる可能性があるのは高々 R / M。
 ```
 
-**計測スクリプトを自作して判定を書き直さないこと。** 上のループは `trace-up` を呼んでいるだけで、
-到達判定を書き直していない。同じ判断を書き直すと、ほぼ必ず食い違い、そして
-**間違っているのは自作スクリプトの方**（→ `knowledge/workflow/mutation-testing-is-the-gate.md`）。
+**計測スクリプトを自作して判定を書き直さないこと。** `reach` は `trace-up --entrypoints` と
+同じ関数を呼んでいるだけで、到達判定を書き直していない。同じ判断を書き直すと、ほぼ必ず
+食い違い、そして**間違っているのは自作スクリプトの方**
+（→ `knowledge/workflow/mutation-testing-is-the-gate.md`）。
 
 ---
 
@@ -315,11 +314,10 @@ python3 -m pytest -q
 | 記号 | 内容 | 状態 |
 |---|---|---|
 | **M1** | `codewiki stats --out … [--json]` | **実装済み。** 手順 3 はこれ 1 本になった |
-| **M2** | `codewiki reach --out … [--depth N]` | 未実装。4 のループが 1 コマンドになり、深さ分布と未到達の内訳も出る |
+| **M2** | `codewiki reach --out … [--depth N]` | **実装済み。** 手順 4 もこれ 1 本。16 秒 → 0.4 秒 |
 | **M3** | `codewiki sample <table> -n N` | 未実装。5b の抽出が固定手順になる。**識別子を含むので持ち出し不可**の警告付き |
 
-手順 4 だけがまだシェルのループ。**測るたびに毎回 273 回プロセスを起動している**ので、
-対象が大きいとここが一番遅い。M2 は 1 プロセスで済む。
+手順 3 と 4 は機械が全部やる。**人手が要るのは手順 5 だけ**になった。
 
 ---
 
