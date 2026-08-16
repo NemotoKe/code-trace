@@ -197,6 +197,42 @@ class StatsCliIntegrationTests(unittest.TestCase):
             self.assertEqual(2, payload["sql"]["accesses"])
             self.assertEqual(1, payload["sql"]["tables"])
 
+    def test_stats_counts_all_distinct_sql_and_call_targets(self):
+        source = (
+            "package com.acme;\n"
+            "public class Repo {\n"
+            "    void first()  { exec(\"UPDATE T1 SET C1 = ? WHERE C2 = ?\"); }\n"
+            "    void second() { exec(\"SELECT C1, C2 FROM T1 WHERE C2 = ?\"); }\n"
+            "    void third()  { exec(\"DELETE FROM T1 WHERE C2 = ?\"); exec(\"UPDATE T1 SET C1 = ?\"); }\n"
+            "    void exec(String sql) {}\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="codewiki-stats-all-distinct-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-stats-all-distinct-out-") as out:
+            write_file(root, "src/com/acme/Repo.java", source)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            queried = run_cli("stats", "--out", out, "--json")
+            self.assertEqual(0, queried.returncode, queried.stderr)
+            payload = json.loads(queried.stdout)
+
+            self.assertEqual(4, payload["sql"]["accesses"])
+            self.assertEqual(1, payload["sql"]["tables"])
+            self.assertEqual(3, payload["sql"]["methods"])
+            self.assertEqual(2, payload["sql"]["columns"])
+            self.assertEqual(3, payload["sql"]["column_methods"])
+            self.assertEqual(6, payload["sql"]["column_accesses"])
+            self.assertEqual(4, payload["calls"]["total"])
+            self.assertEqual(1, payload["calls"]["resolved_targets"])
+            self.assertEqual(2, payload["sql"]["by_verb_access"]["update|WRITE"])
+            self.assertEqual(1, payload["sql"]["by_verb_access"]["select|READ"])
+            self.assertEqual(1, payload["sql"]["by_verb_access"]["delete|WRITE"])
+            for key in (
+                    "select|WRITE", "insert|READ", "insert|WRITE",
+                    "update|READ", "delete|READ", "merge|READ", "merge|WRITE"):
+                self.assertEqual(0, payload["sql"]["by_verb_access"][key])
+
     def test_stats_groups_unknown_entrypoint_kind_as_other_without_leaking_it(self):
         unknown_kind = "shanaiFramework"
         source = (
