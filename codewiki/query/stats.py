@@ -42,6 +42,14 @@ _CALL_REASONS = (
     "bare_member_absent",
     "bare_inherited_single_member",
     "bare_inherited_overloaded",
+    "chained_single_member",
+    "chained_overloaded",
+    "chained_member_absent",
+    "chained_inherited_single_member",
+    "chained_inherited_overloaded",
+    "chained_receiver_unresolved",
+    "chained_return_type_not_internal",
+    "chained_return_type_unknown",
 )
 _SQL_VERBS = ("select", "insert", "update", "delete", "merge")
 _SQL_ACCESSES = ("READ", "WRITE")

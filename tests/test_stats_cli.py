@@ -121,6 +121,14 @@ class StatsCliIntegrationTests(unittest.TestCase):
                     "bare_member_absent": 0,
                     "bare_inherited_single_member": 0,
                     "bare_inherited_overloaded": 0,
+                    "chained_single_member": 0,
+                    "chained_overloaded": 0,
+                    "chained_member_absent": 0,
+                    "chained_inherited_single_member": 0,
+                    "chained_inherited_overloaded": 0,
+                    "chained_receiver_unresolved": 0,
+                    "chained_return_type_not_internal": 0,
+                    "chained_return_type_unknown": 0,
                     "other": 0,
                 },
                 payload["calls"]["by_reason"],
@@ -305,13 +313,14 @@ class StatsCliIntegrationTests(unittest.TestCase):
             self.assertEqual(5, calls["total"])
             self.assertEqual(2, by_reason["single_member"])
             self.assertEqual(1, by_reason["bare_single_member"])
-            self.assertEqual(2, by_reason["form_not_resolved"])
+            self.assertEqual(1, by_reason["chained_single_member"])
+            self.assertEqual(1, by_reason["form_not_resolved"])
             self.assertEqual(0, by_reason["other"])
             self.assertEqual(calls["total"], sum(by_reason.values()))
             for reason, count in by_reason.items():
                 if reason not in (
                         "single_member", "bare_single_member",
-                        "form_not_resolved", "other"):
+                        "chained_single_member", "form_not_resolved", "other"):
                     self.assertEqual(0, count, reason)
 
     def test_stats_groups_unknown_entrypoint_kind_as_other_without_leaking_it(self):
@@ -380,7 +389,7 @@ class StatsCliIntegrationTests(unittest.TestCase):
             queried = run_cli("stats", "--out", out)
             self.assertEqual(0, queried.returncode, queried.stderr)
             lines = queried.stdout.splitlines()
-            self.assertEqual(116, len(lines))
+            self.assertEqual(124, len(lines))
             self.assertEqual(len(lines), len(set(lines)))
             self.assertIn("files.java: 0", lines)
             self.assertIn("calls.by_form_confidence.receiver|CONFIRMED: 0", lines)
