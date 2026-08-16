@@ -95,6 +95,10 @@ def _parser():
     stats = commands.add_parser("stats")
     stats.add_argument("--out", default=None)
     stats.add_argument("--json", action="store_true")
+    reach = commands.add_parser("reach")
+    reach.add_argument("--out", default=None)
+    reach.add_argument("--json", action="store_true")
+    reach.add_argument("--depth", type=_nonnegative, default=8)
     callees = commands.add_parser("callees")
     callees.add_argument("fqn")
     callees.add_argument("--out", default=None)
@@ -472,6 +476,29 @@ def _stats(args):
     return 0
 
 
+def _reach(args):
+    from .query.reach import reach as query_reach
+
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    payload = query_reach(os.path.join(out, "index.sqlite3"), depth=args.depth)
+    if args.json:
+        print(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ))
+        return 0
+
+    def print_metrics(prefix, value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                print_metrics(prefix + "." + key, nested)
+        else:
+            print("%s: %s" % (prefix, value))
+
+    for key, value in payload.items():
+        print_metrics(key, value)
+    return 0
+
+
 def _callees(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     results = query_callees(
@@ -533,6 +560,8 @@ def main(argv=None):
             return _column(args)
         if args.command == "stats":
             return _stats(args)
+        if args.command == "reach":
+            return _reach(args)
         if args.command == "callees":
             return _callees(args)
         return _resolve_type(args)
