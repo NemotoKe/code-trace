@@ -145,6 +145,63 @@ def _matching_close(source: str, opening: int, left: str, right: str) -> int:
     return -1
 
 
+def _matching_open(source: str, closing: int, left: str, right: str) -> int:
+    depth = 0
+    for index in range(closing, -1, -1):
+        char = source[index]
+        if char == right:
+            depth += 1
+        elif char == left:
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _skip_type_args_before(source: str, position: int) -> int:
+    index = position
+    while index >= 0 and source[index].isspace():
+        index -= 1
+    if index < 0 or source[index] != ">":
+        return index
+    opening = _matching_open(source, index, "<", ">")
+    if opening < 0:
+        return index
+    index = opening - 1
+    while index >= 0 and source[index].isspace():
+        index -= 1
+    return index
+
+
+def _chained_receiver(source: str, position: int) -> Optional[str]:
+    index = _skip_type_args_before(source, position - 1)
+    if index < 0 or source[index] != ".":
+        return None
+
+    index -= 1
+    while index >= 0 and source[index].isspace():
+        index -= 1
+    if index < 0 or source[index] != ")":
+        return None
+
+    opening = _matching_open(source, index, "(", ")")
+    if opening < 0:
+        return None
+
+    index = _skip_type_args_before(source, opening - 1)
+    end = index + 1
+    while index >= 0 and (source[index].isalnum()
+                          or source[index] in "_$"):
+        index -= 1
+    start = index + 1
+    if start == end or not (source[start].isalpha()
+                            or source[start] in "_$"):
+        return None
+    if _after_new_qualified(source, start):
+        return None
+    return source[start:end]
+
+
 def _next_body_opening(source: str, start: int) -> Optional[int]:
     for index in range(start, len(source)):
         char = source[index]
@@ -350,6 +407,31 @@ def _after_new(source: str, position: int) -> bool:
                               or source[start - 1] in "_$")
 
 
+def _after_new_qualified(source: str, position: int) -> bool:
+    if _after_new(source, position):
+        return True
+
+    index = position - 1
+    while True:
+        while index >= 0 and source[index].isspace():
+            index -= 1
+        if index < 0 or source[index] != ".":
+            return False
+        index -= 1
+        while index >= 0 and source[index].isspace():
+            index -= 1
+        end = index + 1
+        while index >= 0 and (source[index].isalnum()
+                              or source[index] in "_$"):
+            index -= 1
+        start = index + 1
+        if start == end or not (source[start].isalpha()
+                                or source[start] in "_$"):
+            return False
+        if _after_new(source, start):
+            return True
+
+
 def extract(rel_path: str, language: str, text: str,
             symbols: List[Symbol]) -> List[CallSite]:
     if language != "java":
@@ -396,7 +478,8 @@ def extract(rel_path: str, language: str, text: str,
             continue
         if match.group("type_args") is not None:
             qualified_call_positions.add(position)
-        events.append((position, 3, "chained", None, name))
+        receiver = _chained_receiver(structural, position)
+        events.append((position, 3, "chained", receiver, name))
 
     for match in _BARE_CALL.finditer(structural):
         position = match.start()

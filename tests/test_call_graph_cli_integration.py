@@ -289,7 +289,7 @@ class CallGraphCliIntegrationTests(unittest.TestCase):
                 [
                     (
                         "src/p/ChainCaller.java", "p.ChainCaller.invoke", 4,
-                        "chained", None, "finish", None, None,
+                        "chained", "make", "finish", None, None,
                         "UNRESOLVED", "form_not_resolved", [],
                     ),
                 ],
@@ -308,7 +308,7 @@ class CallGraphCliIntegrationTests(unittest.TestCase):
                 {
                     "line": 4,
                     "form": "chained",
-                    "receiver": None,
+                    "receiver": "make",
                     "name": "finish",
                     "target_fqn": None,
                     "confidence": "UNRESOLVED",
