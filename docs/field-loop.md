@@ -176,27 +176,21 @@ python3 -m codewiki trace-up <期待される更新メソッドの FQN> --entryp
 
 ### 5b. 無作為抽出（5a が通ってから）
 
-決定的に（seed を使わず、同じ DB なら同じ行が出るように）抜く。
-
-```sql
--- SQL アクセス 20 件前後
-SELECT method_fqn, verb, access, table_name, line FROM sql_accesses
- WHERE access_id % 41 = 0 ORDER BY access_id;
-
--- 入口 20 件前後
-SELECT method_fqn, kind, reason FROM entrypoints
- WHERE entrypoint_id % 4 = 0 ORDER BY entrypoint_id;
-
--- 解決済み呼び出し 20 件前後
-SELECT caller_fqn, target_fqn, confidence, reason FROM calls
- WHERE target_fqn IS NOT NULL AND call_id % 4337 = 0 ORDER BY call_id;
+```bash
+python3 -m codewiki sample sql         --out "$RUN/idx" -n 20
+python3 -m codewiki sample entrypoints --out "$RUN/idx" -n 20
+python3 -m codewiki sample calls       --out "$RUN/idx" -n 20
 ```
 
-**割る数（41 / 4 / 4337）は HAPI の件数に合わせてある。** 自分の DB では
-`件数 ÷ 20` で決め直す。件数は手順 3 の `stats` の `sql.accesses` と
-`entrypoints.total` と `calls.by_confidence` にある。
+**この出力は持ち出せない。** ファイルパスと FQN とテーブル名が入っている。それが目的で、
+出力の 1 行目にもそう書いてある（`--json` なら `"exportable": false`）。
+`stats` や `reach` の結果と同じファイルに貼らないこと。
 
-1 行ずつ実ソースを開いて **正 / 誤 / 判定不能** を付ける。持ち出すのは 3 つの件数だけ。
+抜き方は乱数ではなく主キーの剰余なので、**同じ索引なら毎回同じ行が出る**。
+測り直したときに「直ったのか、別の行を引いただけなのか」が区別できる。
+`calls` は解決済みの行だけを返す（未解決の行は突き合わせようがないため）。
+
+各行の `path:line` を開いて **正 / 誤 / 判定不能** を付ける。持ち出すのは 3 つの件数だけ。
 
 **判定不能が過半なら、それは計測ではない。** 条件を狭めて取り直す。
 
@@ -316,9 +310,9 @@ python3 -m pytest -q
 |---|---|---|
 | **M1** | `codewiki stats --out … [--json]` | **実装済み。** 手順 3 はこれ 1 本になった |
 | **M2** | `codewiki reach --out … [--depth N]` | **実装済み。** 手順 4 もこれ 1 本。16 秒 → 0.4 秒 |
-| **M3** | `codewiki sample <table> -n N` | 未実装。5b の抽出が固定手順になる。**識別子を含むので持ち出し不可**の警告付き |
+| **M3** | `codewiki sample <kind> -n N` | **実装済み。** 5b の抽出も 1 本。持ち出し不可の警告つき |
 
-手順 3 と 4 は機械が全部やる。**人手が要るのは手順 5 だけ**になった。
+**手順 1〜4 は機械が全部やる。人間の判断が要るのは手順 5 と 6 だけ。**
 
 ---
 
