@@ -9,6 +9,7 @@ from .declarations import Declaration
 from .resolution import (
     ResolutionIndex, TypeInfo, resolve_type, resolve_type_reference,
 )
+from .returntypes import return_type
 from .symbols import Symbol
 
 
@@ -359,4 +360,72 @@ def resolve_receiver_call(
     return _result(
         site, owner_fqn, (), "UNRESOLVED",
         "inherited_field_member_absent" if inherited_field else "member_absent",
+    )
+
+
+def resolve_chained_call(
+    site: CallSite,
+    resolutions_by_key: Mapping[Tuple[str, str, int, str], CallResolution],
+    symbols_by_fqn: Mapping[str, Symbol],
+    file_packages: Dict[str, Optional[str]],
+    types: Sequence[TypeInfo],
+    imports_by_file: Dict[str, Sequence],
+    lookup: ResolutionIndex,
+    members_by_owner: Mapping[str, Sequence[Symbol]],
+    supertypes_by_owner: Optional[Mapping[str, Tuple[str, ...]]] = None,
+) -> CallResolution:
+    """Resolve a chained call through the previous call's return type."""
+    if site.form != "chained":
+        return _result(site, None, (), "UNRESOLVED", "no_declaration")
+    if site.receiver is None:
+        return _result(site, None, (), "UNRESOLVED", "form_not_resolved")
+
+    previous = resolutions_by_key.get(
+        (site.path, site.enclosing_fqn, site.line, site.receiver)
+    )
+    if (previous is None or previous.confidence != "CONFIRMED"
+            or len(previous.targets) != 1):
+        return _result(
+            site, None, (), "UNRESOLVED", "chained_receiver_unresolved",
+        )
+
+    previous_symbol = symbols_by_fqn.get(previous.targets[0])
+    type_name = return_type(previous_symbol) if previous_symbol is not None else None
+    if type_name is None:
+        return _result(
+            site, None, (), "UNRESOLVED", "chained_return_type_unknown",
+        )
+
+    type_resolution = resolve_type_reference(
+        previous_symbol.path, type_name, file_packages, types,
+        imports_by_file, lookup,
+    )
+    owner_fqn = type_resolution.resolved_fqn
+    if type_resolution.outcome != "resolved" or owner_fqn is None:
+        return _result(
+            site, None, (), "UNRESOLVED",
+            "chained_return_type_not_internal",
+        )
+
+    supertype_map = (
+        supertypes_by_owner if supertypes_by_owner is not None else {}
+    )
+    members, inherited = _members_with_inheritance(
+        site, owner_fqn, members_by_owner, supertype_map,
+    )
+    targets = sorted(set(member.fqn for member in members))
+    if len(members) == 1:
+        return _result(
+            site, owner_fqn, targets, "CONFIRMED",
+            "chained_inherited_single_member"
+            if inherited else "chained_single_member",
+        )
+    if len(members) > 1:
+        return _result(
+            site, owner_fqn, targets, "POSSIBLE",
+            "chained_inherited_overloaded"
+            if inherited else "chained_overloaded",
+        )
+    return _result(
+        site, owner_fqn, (), "UNRESOLVED", "chained_member_absent",
     )

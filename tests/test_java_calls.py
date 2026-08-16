@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import sqlite3
+import tempfile
 import unittest
 
 
@@ -28,6 +31,15 @@ class JavaCallTests(unittest.TestCase):
         )
 
     @staticmethod
+    def _chained_site(receiver, name, line=1):
+        from codewiki.index.calls import CallSite
+
+        return CallSite(
+            "src/Use.java", "com.acme.Use.run", "method", line,
+            "chained", receiver, name,
+        )
+
+    @staticmethod
     def _member(owner_fqn, name, fqn=None):
         from codewiki.index.symbols import Symbol
 
@@ -36,6 +48,319 @@ class JavaCallTests(unittest.TestCase):
             fqn or owner_fqn + "." + name,
             owner_fqn, "com.acme", [], 0, name + "()", 1, 1,
             "CONFIRMED",
+        )
+
+    @staticmethod
+    def _returning_member(owner_fqn, name, return_type_name,
+                          path="src/Repo.java", fqn=None, signature=None):
+        from codewiki.index.symbols import Symbol
+
+        return Symbol(
+            path, name, "method", fqn or owner_fqn + "." + name,
+            owner_fqn, "com.acme", [], 0,
+            signature or "public %s %s()" % (return_type_name, name),
+            1, 1, "CONFIRMED",
+        )
+
+    def test_chained_resolution_uses_return_type_and_inheritance(self):
+        from codewiki.index.callgraph import CallResolution, resolve_chained_call
+        from codewiki.index.resolution import TypeInfo, build_lookup
+        from codewiki.index.calls import CallSite
+
+        types = [
+            TypeInfo("src/Repo.java", "Repo", "com.acme.Repo", "com.acme", None),
+            TypeInfo("src/Row.java", "Row", "com.acme.Row", "com.acme", None),
+            TypeInfo("src/Base.java", "Base", "com.acme.Base", "com.acme", None),
+        ]
+        file_packages = {
+            "src/Use.java": "com.acme",
+            "src/Repo.java": "com.acme",
+            "src/Row.java": "com.acme",
+            "src/Base.java": "com.acme",
+        }
+        imports_by_file = {path: [] for path in file_packages}
+        lookup = build_lookup(
+            types, file_packages.values(),
+            analyzable_packages=file_packages.values(),
+        )
+
+        previous_site = CallSite(
+            "src/Use.java", "com.acme.Use.run", "method", 1,
+            "receiver", "repo", "find",
+        )
+        previous = CallResolution(
+            previous_site, "com.acme.Repo", ("com.acme.Repo.find",),
+            "CONFIRMED", "single_member",
+        )
+        previous_key = ("src/Use.java", "com.acme.Use.run", 1, "find")
+        repo_find = self._returning_member(
+            "com.acme.Repo", "find", "Row",
+            fqn="com.acme.Repo.find",
+        )
+
+        def resolve(members, supertypes=None):
+            return resolve_chained_call(
+                self._chained_site("find", "save"),
+                {previous_key: previous},
+                {repo_find.fqn: repo_find},
+                file_packages, types, imports_by_file, lookup,
+                members, supertypes,
+            )
+
+        single = resolve({
+            "com.acme.Row": [
+                self._returning_member("com.acme.Row", "save", "void"),
+            ],
+        })
+        overloaded = resolve({
+            "com.acme.Row": [
+                self._returning_member("com.acme.Row", "save", "void",
+                                        fqn="com.acme.Row.save"),
+                self._returning_member("com.acme.Row", "save", "void",
+                                        fqn="com.acme.Row.save(int)"),
+            ],
+        })
+        inherited = resolve(
+            {"com.acme.Base": [
+                self._returning_member("com.acme.Base", "save", "void"),
+            ]},
+            {"com.acme.Row": ("com.acme.Base",)},
+        )
+
+        self.assertEqual(
+            ("com.acme.Row", ("com.acme.Row.save",), "CONFIRMED",
+             "chained_single_member"),
+            (single.owner_fqn, single.targets, single.confidence, single.reason),
+        )
+        self.assertEqual(
+            ("com.acme.Row", ("com.acme.Row.save", "com.acme.Row.save(int)"),
+             "POSSIBLE", "chained_overloaded"),
+            (overloaded.owner_fqn, overloaded.targets,
+             overloaded.confidence, overloaded.reason),
+        )
+        self.assertEqual(
+            ("com.acme.Row", ("com.acme.Base.save",), "CONFIRMED",
+             "chained_inherited_single_member"),
+            (inherited.owner_fqn, inherited.targets,
+             inherited.confidence, inherited.reason),
+        )
+
+    def test_chained_resolution_reports_contract_failures(self):
+        from codewiki.index.callgraph import CallResolution, resolve_chained_call
+        from codewiki.index.resolution import TypeInfo, build_lookup
+        from codewiki.index.calls import CallSite
+
+        types = [
+            TypeInfo("src/Repo.java", "Repo", "com.acme.Repo", "com.acme", None),
+            TypeInfo("src/Row.java", "Row", "com.acme.Row", "com.acme", None),
+        ]
+        file_packages = {
+            "src/Use.java": "com.acme",
+            "src/Repo.java": "com.acme",
+            "src/Row.java": "com.acme",
+        }
+        imports_by_file = {path: [] for path in file_packages}
+        lookup = build_lookup(
+            types, file_packages.values(),
+            analyzable_packages=file_packages.values(),
+        )
+
+        def previous(name="find", confidence="CONFIRMED", targets=None,
+                     symbol=None):
+            previous_site = CallSite(
+                "src/Use.java", "com.acme.Use.run", "method", 1,
+                "receiver", "repo", name,
+            )
+            resolution = CallResolution(
+                previous_site, "com.acme.Repo", tuple(targets or (
+                    "com.acme.Repo." + name,
+                )), confidence, "single_member",
+            )
+            return (
+                resolution,
+                {("src/Use.java", "com.acme.Use.run", 1, name): resolution},
+                {resolution.targets[0]: symbol} if symbol is not None else {},
+            )
+
+        def resolve(site, resolution, previous_map, symbols, members=None):
+            return resolve_chained_call(
+                site, previous_map, symbols, file_packages, types,
+                imports_by_file, lookup, members or {},
+            )
+
+        return_unknown = self._returning_member(
+            "com.acme.Repo", "findUnknown", "ignored",
+            fqn="com.acme.Repo.findUnknown",
+            signature="public ??? findUnknown()",
+        )
+        unknown_resolution, unknown_map, unknown_symbols = previous(
+            name="findUnknown", symbol=return_unknown,
+        )
+        unknown = resolve(
+            self._chained_site("findUnknown", "save"), unknown_resolution,
+            unknown_map, unknown_symbols,
+        )
+
+        external = self._returning_member(
+            "com.acme.Repo", "findExternal", "String",
+            fqn="com.acme.Repo.findExternal",
+        )
+        external_resolution, external_map, external_symbols = previous(
+            name="findExternal", symbol=external,
+        )
+        external_result = resolve(
+            self._chained_site("findExternal", "save"), external_resolution,
+            external_map, external_symbols,
+        )
+
+        absent_member = self._returning_member(
+            "com.acme.Repo", "findAbsent", "Row",
+            fqn="com.acme.Repo.findAbsent",
+        )
+        absent_resolution, absent_map, absent_symbols = previous(
+            name="findAbsent", symbol=absent_member,
+        )
+        absent = resolve(
+            self._chained_site("findAbsent", "save"), absent_resolution,
+            absent_map, absent_symbols,
+        )
+
+        unresolved_resolution, unresolved_map, unresolved_symbols = previous(
+            confidence="UNRESOLVED",
+        )
+        unresolved = resolve(
+            self._chained_site("find", "save"), unresolved_resolution,
+            unresolved_map, unresolved_symbols,
+        )
+        multiple_resolution, multiple_map, multiple_symbols = previous(
+            targets=("com.acme.Repo.find", "com.acme.Repo.find(int)"),
+        )
+        multiple = resolve(
+            self._chained_site("find", "save"), multiple_resolution,
+            multiple_map, multiple_symbols,
+        )
+        none_receiver = resolve(
+            self._chained_site(None, "save"), None, {}, {},
+        )
+
+        for result, expected in (
+            (unknown, (None, "chained_return_type_unknown")),
+            (external_result, (None, "chained_return_type_not_internal")),
+            (unresolved, (None, "chained_receiver_unresolved")),
+            (multiple, (None, "chained_receiver_unresolved")),
+            (none_receiver, (None, "form_not_resolved")),
+        ):
+            self.assertEqual(expected[0], result.owner_fqn)
+            self.assertEqual((), result.targets)
+            self.assertEqual("UNRESOLVED", result.confidence)
+            self.assertEqual(expected[1], result.reason)
+        self.assertEqual(
+            ("com.acme.Row", (), "UNRESOLVED", "chained_member_absent"),
+            (absent.owner_fqn, absent.targets, absent.confidence, absent.reason),
+        )
+
+    def test_pipeline_resolves_chained_calls_from_previous_return_types(self):
+        from codewiki.index import pipeline
+
+        files = {
+            "src/com/acme/Repo.java": (
+                "package com.acme;\n"
+                "public class Repo {\n"
+                "    public Row find() { return null; }\n"
+                "    public Unique findUnique() { return null; }\n"
+                "    public Child findChild() { return null; }\n"
+                "    public ChildOverloaded findChildOverloaded() { return null; }\n"
+                "    public Row findAbsent() { return null; }\n"
+                "    public String findExternal() { return null; }\n"
+                "    public ??? findUnknown() { return null; }\n"
+                "}\n"
+            ),
+            "src/com/acme/Row.java": (
+                "package com.acme;\n"
+                "public class Row {\n"
+                "    public void save() {}\n"
+                "    public void save(int value) {}\n"
+                "}\n"
+            ),
+            "src/com/acme/Unique.java": (
+                "package com.acme;\n"
+                "public class Unique { public void save() {} }\n"
+            ),
+            "src/com/acme/Base.java": (
+                "package com.acme;\n"
+                "public class Base {\n"
+                "    public void inherited() {}\n"
+                "    public void overloaded() {}\n"
+                "    public void overloaded(int value) {}\n"
+                "}\n"
+            ),
+            "src/com/acme/Child.java": (
+                "package com.acme;\n"
+                "public class Child extends Base {}\n"
+            ),
+            "src/com/acme/ChildOverloaded.java": (
+                "package com.acme;\n"
+                "public class ChildOverloaded extends Base {}\n"
+            ),
+            "src/app/Use.java": (
+                "package app;\n"
+                "import com.acme.Repo;\n"
+                "class Use {\n"
+                "    private Repo repo;\n"
+                "    void run() {\n"
+                "        repo.find().save();\n"
+                "        repo.findUnique().save();\n"
+                "        repo.findChild().inherited();\n"
+                "        repo.findChildOverloaded().overloaded();\n"
+                "        repo.findAbsent().missing();\n"
+                "        unknown.find().save();\n"
+                "        repo.findExternal().save();\n"
+                "        repo.findUnknown().save();\n"
+                "        new Repo().save();\n"
+                "    }\n"
+                "}\n"
+            ),
+        }
+
+        with tempfile.TemporaryDirectory(prefix="codewiki-chained-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-chained-out-") as out:
+            for relative_path, contents in files.items():
+                path = os.path.join(root, relative_path)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write(contents)
+            result = pipeline.run(root, out, jobs=1)
+
+            connection = sqlite3.connect(result.db_path)
+            try:
+                rows = connection.execute(
+                    "SELECT line, receiver, name, owner_fqn, confidence, reason "
+                    "FROM calls WHERE form = 'chained' ORDER BY line"
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual(
+            [
+                (6, "find", "save", "com.acme.Row", "POSSIBLE",
+                 "chained_overloaded"),
+                (7, "findUnique", "save", "com.acme.Unique", "CONFIRMED",
+                 "chained_single_member"),
+                (8, "findChild", "inherited", "com.acme.Child", "CONFIRMED",
+                 "chained_inherited_single_member"),
+                (9, "findChildOverloaded", "overloaded", "com.acme.ChildOverloaded",
+                 "POSSIBLE", "chained_inherited_overloaded"),
+                (10, "findAbsent", "missing", "com.acme.Row", "UNRESOLVED",
+                 "chained_member_absent"),
+                (11, "find", "save", None, "UNRESOLVED",
+                 "chained_receiver_unresolved"),
+                (12, "findExternal", "save", None, "UNRESOLVED",
+                 "chained_return_type_not_internal"),
+                (13, "findUnknown", "save", None, "UNRESOLVED",
+                 "chained_return_type_unknown"),
+                (14, None, "save", None, "UNRESOLVED", "form_not_resolved"),
+            ],
+            rows,
         )
 
     def test_bare_resolution_finds_direct_member(self):
