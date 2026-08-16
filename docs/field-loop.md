@@ -38,7 +38,7 @@ codewiki を実際の対象リポジトリに当て、効いているかを数�
 git clone <remote> codewiki
 cd codewiki
 python3 --version            # 3.9 以上
-python3 -m pytest -q         # 365 passed であること
+python3 -m pytest -q         # 全件通ること（1 件でも落ちたら測定に進まない）
 git rev-parse --short HEAD   # 測定値と必ずセットで記録する
 ```
 
@@ -162,8 +162,8 @@ python3 -m codewiki reach --out "$RUN/idx" --depth 16 --json > "$RUN/reach-16.js
 自分が答えを知っている経路を 10 本選び、ツールに同じ質問をする。
 
 ```bash
-python3 -m codewiki column   <TABLE>.<COLUMN> --write --json --out "$IDX"
-python3 -m codewiki trace-up <期待される更新メソッドの FQN> --entrypoints --out "$IDX"
+python3 -m codewiki column   <TABLE>.<COLUMN> --write --json --out "$RUN/idx"
+python3 -m codewiki trace-up <期待される更新メソッドの FQN> --entrypoints --out "$RUN/idx"
 ```
 
 | # | 質問 | 自分の答え | ツールの答え | 一致 |
@@ -193,7 +193,8 @@ SELECT caller_fqn, target_fqn, confidence, reason FROM calls
 ```
 
 **割る数（41 / 4 / 4337）は HAPI の件数に合わせてある。** 自分の DB では
-`件数 ÷ 20` で決め直す。件数は 3-4 と 3-6 で取ってある。
+`件数 ÷ 20` で決め直す。件数は手順 3 の `stats` の `sql.accesses` と
+`entrypoints.total` と `calls.by_confidence` にある。
 
 1 行ずつ実ソースを開いて **正 / 誤 / 判定不能** を付ける。持ち出すのは 3 つの件数だけ。
 
@@ -209,12 +210,12 @@ SELECT caller_fqn, target_fqn, confidence, reason FROM calls
 | 記号 | 症状 | 確認コマンド | 直す場所 |
 |---|---|---|---|
 | **A** | SQL 文自体が拾えていない | `column`/`table` が 0 件。`sql_accesses` にも無い | codewiki（文字列抽出） |
-| **B** | SQL は拾えたがテーブル/カラムが出ない | `sql_accesses` にあるが `sql_column_accesses` に無い（3-5） | codewiki（SQL 解析） |
+| **B** | SQL は拾えたがテーブル/カラムが出ない | `stats` の `sql.accesses_without_column` が 0 でない | codewiki（SQL 解析） |
 | **C** | メソッドが索引に無い / 帰属が違う | `python3 -m codewiki symbol <name>` で引けない | codewiki（宣言抽出） |
 | **D** | 呼び出し辺が無い | `callers <fqn>` が空 | codewiki（呼び出し解決）**最大の穴** |
 | **E** | 辺はあるが確信度で落ちる | `callers` と `callers --confirmed` の差 | 使い方 or codewiki |
 | **F** | 入口として認識されない | `entrypoints` にその FQN が無い | `ENTRYPOINT_RULES` に追加 |
-| **G** | 深さ / 打ち切り | JSON の `truncated` が true | `--depth` を上げて再実行 |
+| **G** | 深さ / 打ち切り | `reach` の `truncated` が 0 でない | `--depth` を上げて再実行 |
 | **H** | 出るが間違い | 人が見て誤り | codewiki（偽陽性） |
 
 上から順に確認する。**A が起きていると D 以降は判定できない**（そもそも起点が無い）。
