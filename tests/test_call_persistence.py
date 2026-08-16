@@ -345,7 +345,7 @@ class CallPersistenceTests(unittest.TestCase):
         self.assertEqual(
             [
                 ("bare", None, "p.Caller", None, "UNRESOLVED", "bare_member_absent", "[]"),
-                ("chained", None, None, None, "UNRESOLVED", "form_not_resolved", "[]"),
+                ("chained", "make", None, None, "UNRESOLVED", "form_not_resolved", "[]"),
             ],
             rows,
         )

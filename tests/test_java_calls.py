@@ -11,6 +11,13 @@ class JavaCallTests(unittest.TestCase):
         symbols = extract_symbols("src/Orders.java", "java", source)
         return extract("src/Orders.java", "java", source, symbols)
 
+    def _chained_sites(self, source):
+        return [
+            (call.form, call.name, call.receiver)
+            for call in self._extract(source)
+            if call.form == "chained"
+        ]
+
     @staticmethod
     def _bare_site(enclosing_fqn, name, enclosing_kind="method"):
         from codewiki.index.calls import CallSite
@@ -210,7 +217,7 @@ class JavaCallTests(unittest.TestCase):
         calls = self._extract(source)
 
         self.assertEqual(
-            [("bare", None, "getBean"), ("chained", None, "save")],
+            [("bare", None, "getBean"), ("chained", "getBean", "save")],
             [(call.form, call.receiver, call.name) for call in calls],
         )
 
@@ -281,11 +288,135 @@ class JavaCallTests(unittest.TestCase):
         calls = self._extract(source)
 
         self.assertEqual(
-            [("bare", None, "getBean"), ("chained", None, "doThing")],
+            [("bare", None, "getBean"), ("chained", "getBean", "doThing")],
             [(call.form, call.receiver, call.name) for call in calls],
         )
         self.assertEqual(["Orders.load", "Orders.load"],
                          [call.enclosing_fqn for call in calls])
+
+    def test_chained_receiver_is_previous_call_name(self):
+        source = (
+            "class Orders {\n"
+            "    void load() {\n"
+            "        a.b().c();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            [("chained", "c", "b")],
+            self._chained_sites(source),
+        )
+
+    def test_chained_receiver_after_bare_call(self):
+        source = (
+            "class Orders {\n"
+            "    void load() {\n"
+            "        foo().bar();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            [("chained", "bar", "foo")],
+            self._chained_sites(source),
+        )
+
+    def test_chained_receiver_tracks_each_link(self):
+        source = (
+            "class Orders {\n"
+            "    void load() {\n"
+            "        a.b().c().d();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            [("chained", "c", "b"), ("chained", "d", "c")],
+            self._chained_sites(source),
+        )
+
+    def test_chained_receiver_after_member_call(self):
+        source = (
+            "class Orders {\n"
+            "    void load() {\n"
+            "        list.get(0).name();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            [("chained", "name", "get")],
+            self._chained_sites(source),
+        )
+
+    def test_chained_receiver_counts_nested_argument_parentheses(self):
+        source = (
+            "class Orders {\n"
+            "    void load() {\n"
+            "        a.b(x.y()).c();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            [("chained", "c", "b")],
+            self._chained_sites(source),
+        )
+
+    def test_chained_receiver_is_none_after_cast_expression(self):
+        source = (
+            "class Orders {\n"
+            "    void load() {\n"
+            "        ((Foo) x).m();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            [("chained", "m", None)],
+            self._chained_sites(source),
+        )
+
+    def test_chained_receiver_is_none_after_new_expression(self):
+        source = (
+            "class Orders {\n"
+            "    void load() {\n"
+            "        new Foo().bar();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            [("chained", "bar", None)],
+            self._chained_sites(source),
+        )
+
+    def test_chained_receiver_requires_close_paren_before_dot(self):
+        source = (
+            "class Orders {\n"
+            "    void run() {\n"
+            "        log(a).b();\n"
+            "        System.out.println(\"x\");\n"
+            "        log(a).b();\n"
+            "        arr[0].size();\n"
+            "        log(a).b();\n"
+            "        \"abc\".length();\n"
+            "    }\n"
+            "}\n"
+        )
+
+        chained = [
+            (call.name, call.receiver)
+            for call in self._extract(source)
+            if call.form == "chained"
+            and call.name in ("println", "size", "length")
+        ]
+
+        self.assertEqual(
+            [("println", None), ("size", None), ("length", None)],
+            chained,
+        )
 
     def test_method_reference_is_a_separate_site(self):
         source = (
