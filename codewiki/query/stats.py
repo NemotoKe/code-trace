@@ -18,6 +18,31 @@ _SYMBOL_KINDS = (
 _IMPORT_FORMS = ("single", "wildcard", "static_single", "static_wildcard")
 _OUTCOMES = ("resolved", "external", "unresolved", "excluded")
 _CALL_FORMS = ("receiver", "bare", "chained", "method_ref", "constructor")
+_CALL_REASONS = (
+    "form_not_resolved",
+    "no_declaration",
+    "type_unresolved",
+    "receiver_not_internal",
+    "single_member",
+    "overloaded",
+    "member_absent",
+    "inherited_single_member",
+    "inherited_overloaded",
+    "static_single_member",
+    "static_overloaded",
+    "static_member_absent",
+    "static_inherited_single_member",
+    "static_inherited_overloaded",
+    "inherited_field_single_member",
+    "inherited_field_overloaded",
+    "inherited_field_member_absent",
+    "inherited_field_type_unresolved",
+    "bare_single_member",
+    "bare_overloaded",
+    "bare_member_absent",
+    "bare_inherited_single_member",
+    "bare_inherited_overloaded",
+)
 _SQL_VERBS = ("select", "insert", "update", "delete", "merge")
 _SQL_ACCESSES = ("READ", "WRITE")
 _ENTRYPOINT_KINDS = ("main", "servlet", "jaxrs")
@@ -122,6 +147,11 @@ def stats(path: str) -> Dict:
             "SELECT confidence, COUNT(*) FROM calls GROUP BY confidence",
             _CONFIDENCES,
         )
+        calls_by_reason = _group_counts(
+            connection,
+            "SELECT reason, COUNT(*) FROM calls GROUP BY reason",
+            _CALL_REASONS,
+        )
         calls_by_form_confidence = _composite_counts(
             connection,
             "SELECT form, confidence, COUNT(*) FROM calls "
@@ -187,6 +217,7 @@ def stats(path: str) -> Dict:
                 "total": _scalar(connection, "SELECT COUNT(*) FROM calls"),
                 "by_form": calls_by_form,
                 "by_confidence": calls_by_confidence,
+                "by_reason": calls_by_reason,
                 "by_form_confidence": calls_by_form_confidence,
                 "methods": _scalar(
                     connection,
