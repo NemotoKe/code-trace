@@ -99,6 +99,11 @@ def _parser():
     reach.add_argument("--out", default=None)
     reach.add_argument("--json", action="store_true")
     reach.add_argument("--depth", type=_nonnegative, default=8)
+    sample = commands.add_parser("sample")
+    sample.add_argument("kind", choices=("sql", "entrypoints", "calls"))
+    sample.add_argument("--out", default=None)
+    sample.add_argument("-n", type=int, default=20)
+    sample.add_argument("--json", action="store_true")
     callees = commands.add_parser("callees")
     callees.add_argument("fqn")
     callees.add_argument("--out", default=None)
@@ -499,6 +504,30 @@ def _reach(args):
     return 0
 
 
+def _sample(args):
+    from .query.sample import sample as query_sample
+
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    payload = query_sample(
+        os.path.join(out, "index.sqlite3"), args.kind, n=args.n
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return 0
+
+    print("警告: この出力は識別子を含む。実ソース環境の外へ持ち出さないこと。")
+    if args.kind == "sql":
+        fields = ("method_fqn", "verb", "access", "table_name")
+    elif args.kind == "entrypoints":
+        fields = ("method_fqn", "kind", "reason")
+    else:
+        fields = ("caller_fqn", "target_fqn", "confidence", "reason")
+    for result in payload["results"]:
+        location = "%s:%s" % (result["path"], result["line"])
+        print(" ".join([location] + [str(result[field]) for field in fields]))
+    return 0
+
+
 def _callees(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     results = query_callees(
@@ -562,6 +591,8 @@ def main(argv=None):
             return _stats(args)
         if args.command == "reach":
             return _reach(args)
+        if args.command == "sample":
+            return _sample(args)
         if args.command == "callees":
             return _callees(args)
         return _resolve_type(args)
