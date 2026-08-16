@@ -14,5 +14,6 @@
 - `[gotcha]` フレームワークの基底クラスは常に external。継承マーカーの判定に解決済み FQN を使うと永久に 0 件 — [gotcha/framework-supertypes-are-always-external.md](gotcha/framework-supertypes-are-always-external.md) #supertypes #resolution #entrypoint
 - `[gotcha]` SQL 文を 1 行に潰して計測しない。`--` コメントが以降を飲む。生のまま関数へ渡す — [gotcha/do-not-flatten-sql-before-analyzing.md](gotcha/do-not-flatten-sql-before-analyzing.md) #measurement #sql #verification
 - `[gotcha]` Codex は頼まなくても入れ子で codex を起動し sandbox を外す。自己レビューを独立検証と数えない — [gotcha/codex-spawns-nested-codex-unprompted.md](gotcha/codex-spawns-nested-codex-unprompted.md) #codex #delegation #sandbox
+- `[gotcha]` バイト数が同じ変異は `git checkout` で戻しても `.pyc` が残り、変異版が動き続ける。変異テストの判定が両方向に狂う — [gotcha/same-size-mutation-leaves-stale-pyc.md](gotcha/same-size-mutation-leaves-stale-pyc.md) #testing #mutation #python
 - `[environment]` 対象の実ソースはこの PC / このアカウントでは見られない。実コードでの実測はこちら側では一切できない — [environment/target-source-not-visible-here.md](environment/target-source-not-visible-here.md) #measurement #scope
 - `[environment]` 持ち込みは git clone 可。持ち出しは集計値と手書き合成例まで。識別子で割った集計は件数でも出せない — [environment/what-crosses-the-air-gap.md](environment/what-crosses-the-air-gap.md) #measurement #security #workflow
