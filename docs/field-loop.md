@@ -324,7 +324,7 @@ python3 -m pytest -q
 
 ## 付録C. HAPI 基準値
 
-**測定日 2026-08-16 / codewiki `e297eed`（C5 込み）/ HAPI FHIR / `--jobs 8` で 51 秒 / DB 336MB**
+**測定日 2026-08-16 / codewiki `f0f0a1e`（C5・C6a 込み）/ HAPI FHIR / `--jobs 8` で 51 秒 / DB 336MB**
 
 HAPI は**ライブラリであってアプリではない**。実コードの代理にはならない。
 ここに置くのは「桁の目安」と「回帰の basis」としてだけ。
@@ -344,7 +344,7 @@ supertype       4,190   解決率 93.2%
   form 別:
     receiver     CONFIRMED 86,699 / POSSIBLE 23,474 / UNRESOLVED 131,118
     bare         CONFIRMED 31,801 / POSSIBLE  8,407 / UNRESOLVED  69,596
-    chained      全部 UNRESOLVED 163,750
+    chained      全部 UNRESOLVED 163,750（うち 149,521 件 91.3% は受け手を記録済み）
     constructor  全部 UNRESOLVED  60,624
     method_ref   全部 UNRESOLVED   1,241
   索引メソッド 49,505 に対し、呼び出し先として解決されたもの 19,070 (38.5%)
@@ -385,3 +385,7 @@ receiver + bare に変わったため。分子は 40,102 増えている。**率
 **まだ解決されていない form が 3 つある。** `chained`（163,750）、`constructor`
 （60,624）、`method_ref`（1,241）は今も全部 UNRESOLVED で、合計 225,615 件ある。
 実コードで到達率が伸びないときは、ここが次の候補。
+
+`chained` については受け手の記録まで済んでいる（163,750 件中 149,521 件、91.3%）。
+`a.b().c()` の `c` に対して `b` が入っている。残るのは戻り値型を引いて解決する部分で、
+戻り値型は `symbols.signature` に文字列として入っているのでスキーマ変更は要らない。
