@@ -1,13 +1,22 @@
 ---
 id: proceed-without-per-unit-approval
 category: workflow
-captured: 2026-08-13
+captured: 2026-08-16
 confidence: stated
-source: "随時コミット分けて、どんどん進めてって、。俺の承認なしでいいよ"
-tags: [orchestration, commit, autonomy, reporting]
+source: "随時コミット分けて、どんどん進めてって、。俺の承認なしでいいよ" / "並行で投げれるなら並行で" / "止まんなくていいよどんどんやって"
+tags: [orchestration, commit, autonomy, reporting, parallel]
 ---
 
 unit ごとに人間の承認を待たない。**1 unit = 1 コミットで分けて、そのまま次に進む。**
+
+**バックログの次を選ぶのも待たない。** 「次どっちにしますか」と聞いて止まらない。
+残っている作業があるなら着手する。方針が違えば人間が割り込んでくる。
+
+**独立な unit は並行で投げる。** worktree を分けて 2 本同時が既定。CLAUDE.md の
+「genuinely independent なものだけ並行」は守る。実際には
+`cli.py` のように 2 unit が同じファイルに触ることがあるが、**触ってよい領域を互いに
+排他になるよう委譲プロンプトで名指しすれば衝突しない**（M1 は parser 定義の追加だけ、
+C5 は表示文字列 1 行だけ、という書き方で 2 回とも競合なくマージできた）。
 
 **やめないこと:**
 
