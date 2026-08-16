@@ -363,6 +363,71 @@ class JavaCallTests(unittest.TestCase):
             rows,
         )
 
+    def test_pipeline_distinguishes_bare_calls_with_unresolved_supertypes(self):
+        from codewiki.index import pipeline
+
+        files = {
+            "src/com/acme/Base.java": (
+                "package com.acme;\n"
+                "public class Base { public void known() {} }\n"
+            ),
+            "src/com/acme/Internal.java": (
+                "package com.acme;\n"
+                "public class Internal extends Base {\n"
+                "    void a() { known(); }\n"
+                "    void b() { nosuch(); }\n"
+                "}\n"
+            ),
+            "src/com/acme/External.java": (
+                "package com.acme;\n"
+                "import javax.servlet.http.HttpServlet;\n"
+                "public class External extends HttpServlet {\n"
+                "    void c() { doGet(); }\n"
+                "    void d() { nosuch(); }\n"
+                "}\n"
+            ),
+            "src/com/acme/Plain.java": (
+                "package com.acme;\n"
+                "public class Plain { void e() { missing(); } }\n"
+            ),
+        }
+
+        with tempfile.TemporaryDirectory(prefix="codewiki-bare-supertype-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-bare-supertype-out-") as out:
+            for relative_path, contents in files.items():
+                path = os.path.join(root, relative_path)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write(contents)
+            result = pipeline.run(root, out, jobs=1)
+
+            connection = sqlite3.connect(result.db_path)
+            try:
+                rows = connection.execute(
+                    "SELECT caller_fqn, name, owner_fqn, target_fqn, "
+                    "confidence, reason FROM calls "
+                    "WHERE form = 'bare' ORDER BY caller_fqn"
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual(
+            [
+                ("com.acme.External.c", "doGet", "com.acme.External", None,
+                 "UNRESOLVED", "bare_supertype_not_internal"),
+                ("com.acme.External.d", "nosuch", "com.acme.External", None,
+                 "UNRESOLVED", "bare_supertype_not_internal"),
+                ("com.acme.Internal.a", "known", "com.acme.Internal",
+                 "com.acme.Base.known", "CONFIRMED",
+                 "bare_inherited_single_member"),
+                ("com.acme.Internal.b", "nosuch", "com.acme.Internal", None,
+                 "UNRESOLVED", "bare_member_absent"),
+                ("com.acme.Plain.e", "missing", "com.acme.Plain", None,
+                 "UNRESOLVED", "bare_member_absent"),
+            ],
+            rows,
+        )
+
     def test_bare_resolution_finds_direct_member(self):
         from codewiki.index.callgraph import resolve_bare_call
 

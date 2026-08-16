@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Collection, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .calls import CallSite
 from .declarations import Declaration
@@ -232,6 +232,7 @@ def resolve_bare_call(
     site: CallSite,
     members_by_owner: Mapping[str, Sequence[Symbol]],
     supertypes_by_owner: Optional[Mapping[str, Tuple[str, ...]]] = None,
+    owners_with_unresolved_supertypes: Optional[Collection[str]] = None,
 ) -> CallResolution:
     """Resolve a bare call against its enclosing type and its supertypes."""
     if site.form != "bare":
@@ -258,6 +259,11 @@ def resolve_bare_call(
             site, owner_fqn, targets, "POSSIBLE",
             "bare_inherited_overloaded"
             if inherited else "bare_overloaded",
+        )
+    if (owners_with_unresolved_supertypes is not None
+            and owner_fqn in owners_with_unresolved_supertypes):
+        return _result(
+            site, owner_fqn, (), "UNRESOLVED", "bare_supertype_not_internal",
         )
     return _result(site, owner_fqn, (), "UNRESOLVED", "bare_member_absent")
 

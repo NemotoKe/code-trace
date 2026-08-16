@@ -244,12 +244,16 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         item.fqn: item for item in extracted if item.kind == "method"
     }
     supertypes_by_owner_values = {}
+    owners_with_unresolved_supertypes = set()
     for ref, supertype_resolution in supertype_rows:
-        if (supertype_resolution.outcome == "resolved"
-                and supertype_resolution.resolved_fqn is not None):
+        if supertype_resolution.outcome == "resolved":
+            if supertype_resolution.resolved_fqn is None:
+                continue
             supertypes_by_owner_values.setdefault(ref.owner_fqn, []).append(
                 supertype_resolution.resolved_fqn
             )
+        else:
+            owners_with_unresolved_supertypes.add(ref.owner_fqn)
     supertypes_by_owner = {
         owner: tuple(sorted(values))
         for owner, values in supertypes_by_owner_values.items()
@@ -275,6 +279,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         elif site.form == "bare":
             call_resolution = callgraph.resolve_bare_call(
                 site, members_by_owner, supertypes_by_owner,
+                owners_with_unresolved_supertypes,
             )
         elif site.form == "chained":
             call_resolution = callgraph.resolve_chained_call(

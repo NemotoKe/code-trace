@@ -42,6 +42,7 @@ _CALL_REASONS = (
     "bare_member_absent",
     "bare_inherited_single_member",
     "bare_inherited_overloaded",
+    "bare_supertype_not_internal",
     "chained_single_member",
     "chained_overloaded",
     "chained_member_absent",
