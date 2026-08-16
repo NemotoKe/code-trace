@@ -73,38 +73,33 @@ git rev-parse HEAD > "$RUN/codewiki-commit.txt"
 
 ## 3. 量を測る（機械が数える。判断は要らない）
 
-すべて `sqlite3 "$RUN/idx/index.sqlite3"` に貼る。出力は件数だけなので持ち出してよい。
-
-```sql
--- 3-1 ファイルと宣言
-SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY COUNT(*) DESC;
-SELECT confidence, COUNT(*) FROM symbols GROUP BY confidence ORDER BY confidence;
-
--- 3-2 名前解決
-SELECT key, value FROM meta WHERE key LIKE 'import_outcome_%' OR key LIKE 'type_resolution_outcome_%'
-  OR key = 'internal_resolution_rate' ORDER BY key;
-SELECT outcome, COUNT(*) FROM supertypes GROUP BY outcome ORDER BY outcome;
-
--- 3-3 呼び出し（trace の上限を決める。最重要）
-SELECT form, confidence, COUNT(*) FROM calls GROUP BY form, confidence ORDER BY form, confidence;
-SELECT (SELECT COUNT(*) FROM symbols WHERE kind='method') AS methods,
-       (SELECT COUNT(DISTINCT target_fqn) FROM calls WHERE target_fqn IS NOT NULL) AS reachable_methods;
-
--- 3-4 SQL
-SELECT verb, access, COUNT(*) FROM sql_accesses GROUP BY verb, access ORDER BY verb;
-SELECT COUNT(*), COUNT(DISTINCT table_key), COUNT(DISTINCT method_fqn) FROM sql_accesses;
-SELECT COUNT(*), COUNT(DISTINCT table_key||'.'||column_key), COUNT(DISTINCT method_fqn)
-  FROM sql_column_accesses;
-
--- 3-5 テーブルは取れたがカラムが 1 つも取れなかったアクセス
-SELECT COUNT(*) FROM sql_accesses a WHERE NOT EXISTS (
-  SELECT 1 FROM sql_column_accesses c
-   WHERE c.file_id=a.file_id AND c.method_fqn=a.method_fqn
-     AND c.line=a.line AND c.table_key=a.table_key);
-
--- 3-6 入口
-SELECT kind, COUNT(*) FROM entrypoints GROUP BY kind ORDER BY kind;
+```bash
+python3 -m codewiki stats --out "$RUN/idx" --json > "$RUN/stats.json"   # 持ち出す
+python3 -m codewiki stats --out "$RUN/idx"                              # 画面で読む
 ```
+
+**この JSON がそのまま持ち出し物になる。** 中身は件数と率だけで、識別子は 1 つも入らない。
+GROUP BY するのは値の集合がコードで固定されている列だけ（`language` `kind` `confidence`
+`form` `outcome` `verb` `access`）で、テーブル名やカラム名やパスは `COUNT(DISTINCT …)` の
+中にしか現れない。`meta` も許可リスト経由で読むので、`repo_root`（向こうの絶対パス）は出ない。
+この性質は `tests/test_stats_cli.py` で固定してある。
+
+出る 9 群:
+
+| 群 | 中身 |
+|---|---|
+| `files` | 言語別ファイル数 |
+| `symbols` | 宣言の総数、確信度別、種別 |
+| `imports` | 形式別・結果別、内部解決率 |
+| `type_resolutions` | 結果別 |
+| `supertypes` | 結果別、解決率 |
+| `calls` | form 別・確信度別・その組、索引メソッド数、**解決された呼び出し先の数** |
+| `sql` | アクセス / テーブル / メソッド、verb×access、カラム側、**テーブルは取れたがカラムが 0 だったアクセス** |
+| `entrypoints` | kind 別、メソッド数 |
+
+**`by_*` に `other` が出たら、語彙の外の値がその数だけある。** `entrypoints.by_kind.other`
+が 0 でないなら、`ENTRYPOINT_RULES` に自分で足した kind が効いている証拠。名前は
+（持ち出せないので）出ない。
 
 **読み方:** 付録C の HAPI 基準値と比べる。ただし **HAPI はライブラリであってアプリではない**
 ので、一致を期待しない。見るのは 2 つだけ。
@@ -296,36 +291,35 @@ python3 -m pytest -q
 
 ## 付録A. 記録テンプレート（環境B → 環境A へ渡す形）
 
+`stats --json` の出力に、機械では出せない 3 つを足すだけ。
+
 ```json
 {
   "date": "2026-MM-DD",
   "codewiki_commit": "xxxxxxx",
-  "scan":    { "java": 0, "xml": 0, "sql": 0, "properties": 0, "skipped": {} },
-  "symbols": { "CONFIRMED": 0, "POSSIBLE": 0, "UNRESOLVED": 0 },
-  "resolve": { "internal_resolution_rate": 0.0, "supertype": {} },
-  "calls":   { "by_form_confidence": {}, "methods": 0, "reachable_methods": 0 },
-  "sql":     { "accesses": 0, "tables": 0, "methods": 0,
-               "column_accesses": 0, "columns": 0, "accesses_without_column": 0 },
-  "entrypoints": { "main": 0, "servlet": 0, "jaxrs": 0 },
-  "reach":   { "methods": 0, "reached": 0, "rate": 0.0 },
+  "stats": { "...": "stats --json の出力をそのまま貼る" },
+  "reach": { "methods": 0, "reached": 0, "rate": 0.0, "depth": 8 },
+  "reach_deep": { "methods": 0, "reached": 0, "rate": 0.0, "depth": 16 },
   "sampling": { "known_answers": { "n": 10, "hit": 0 },
                 "random": { "n": 20, "correct": 0, "wrong": 0, "undecidable": 0 } }
 }
 ```
 
-**識別子は 1 つも入っていないこと。** 入っていたらそれは持ち出せない。
+**`stats` の中身は識別子が入らないことが保証されている。**
+手で足す 4 行に識別子を書かないことだけ気をつければよい。
 
 ---
 
 ## 付録B. この手順を楽にする未実装の道具
 
-現状 3 と 4 は手で SQL を貼っている。以下は環境A で作る unit。
-
-| 記号 | 内容 | これがあると |
+| 記号 | 内容 | 状態 |
 |---|---|---|
-| **M1** | `codewiki stats --out … [--json]` | 3 の SQL 全部が 1 コマンドになる。closed vocabulary でだけ割るので**出力がそのまま持ち出せる** |
-| **M2** | `codewiki reach --out … [--depth N]` | 4 のループが 1 コマンドになる。深さ分布と未到達の内訳も出る |
-| **M3** | `codewiki sample <table> -n N` | 5b の抽出が固定手順になる。**識別子を含むので持ち出し不可**の警告付き |
+| **M1** | `codewiki stats --out … [--json]` | **実装済み。** 手順 3 はこれ 1 本になった |
+| **M2** | `codewiki reach --out … [--depth N]` | 未実装。4 のループが 1 コマンドになり、深さ分布と未到達の内訳も出る |
+| **M3** | `codewiki sample <table> -n N` | 未実装。5b の抽出が固定手順になる。**識別子を含むので持ち出し不可**の警告付き |
+
+手順 4 だけがまだシェルのループ。**測るたびに毎回 273 回プロセスを起動している**ので、
+対象が大きいとここが一番遅い。M2 は 1 プロセスで済む。
 
 ---
 
