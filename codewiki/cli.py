@@ -161,7 +161,7 @@ def _index(args):
         print("calls confidence %s: %d" % (
             confidence, (result.call_confidences or {}).get(confidence, 0)
         ))
-    print("call resolution rate (receiver forms only): %.1f%%" % (
+    print("call resolution rate (receiver and bare forms): %.1f%%" % (
         result.call_resolution_rate * 100.0
     ))
     for stage in (

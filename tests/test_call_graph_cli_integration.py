@@ -344,8 +344,8 @@ class CallGraphCliIntegrationTests(unittest.TestCase):
                 [
                     (
                         "src/p/Noise.java", "p.Noise.invoke", 10,
-                        "bare", None, "realCall", None, None,
-                        "UNRESOLVED", "form_not_resolved", [],
+                        "bare", None, "realCall", "p.Noise", "p.Noise.realCall",
+                        "CONFIRMED", "bare_single_member", ["p.Noise.realCall"],
                     ),
                 ],
                 rows,

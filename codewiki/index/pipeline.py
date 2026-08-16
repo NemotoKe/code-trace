@@ -268,18 +268,23 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
                 imports_by_file, lookup, members_by_owner,
                 supertypes_by_owner, fields_by_owner,
             )
+        elif site.form == "bare":
+            call_resolution = callgraph.resolve_bare_call(
+                site, members_by_owner, supertypes_by_owner,
+            )
         else:
             call_resolution = callgraph.CallResolution(
                 site, None, (), "UNRESOLVED", "form_not_resolved",
             )
         call_rows.append(call_resolution)
         call_confidences[call_resolution.confidence] += 1
-    receiver_count = call_forms["receiver"]
+    receiver_and_bare_count = call_forms["receiver"] + call_forms["bare"]
     call_resolved = (
         call_confidences["CONFIRMED"] + call_confidences["POSSIBLE"]
     )
     call_resolution_rate = (
-        float(call_resolved) / receiver_count if receiver_count else 0.0
+        float(call_resolved) / receiver_and_bare_count
+        if receiver_and_bare_count else 0.0
     )
     call_row_count = sum(
         len(set(call_resolution.targets)) or 1
