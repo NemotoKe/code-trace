@@ -88,7 +88,7 @@ class CallPersistenceTests(unittest.TestCase):
                 {"CONFIRMED": 2, "POSSIBLE": 0, "UNRESOLVED": 4},
                 result.call_confidences,
             )
-            self.assertAlmostEqual(2.0 / 3.0, result.call_resolution_rate)
+            self.assertAlmostEqual(2.0 / 4.0, result.call_resolution_rate)
             self.assertGreaterEqual(result.timings["calls"], 0.0)
             self.assertIn(("calls", "resolving Java calls"), events)
 
@@ -130,10 +130,16 @@ class CallPersistenceTests(unittest.TestCase):
                 self.assertEqual("method", row[3])
                 self.assertEqual(3, row[4])
                 if row[5] != "receiver":
-                    self.assertIsNone(row[8])
+                    self.assertEqual(
+                        "p.Caller" if row[5] == "bare" else None, row[8]
+                    )
                     self.assertIsNone(row[9])
                     self.assertEqual("UNRESOLVED", row[10])
-                    self.assertEqual("form_not_resolved", row[11])
+                    self.assertEqual(
+                        "bare_member_absent"
+                        if row[5] == "bare" else "form_not_resolved",
+                        row[11],
+                    )
                     self.assertEqual([], row[12])
 
             connection = sqlite3.connect(result.db_path)
@@ -307,7 +313,7 @@ class CallPersistenceTests(unittest.TestCase):
             "calls confidence CONFIRMED: 2",
             "calls confidence POSSIBLE: 0",
             "calls confidence UNRESOLVED: 4",
-            "call resolution rate (receiver forms only): 66.7%",
+            "call resolution rate (receiver and bare forms): 50.0%",
         ):
             self.assertIn(line, completed.stdout)
         self.assertRegex(completed.stdout, r"(?m)^calls: [0-9]+\.[0-9]{3}s$")
@@ -338,7 +344,7 @@ class CallPersistenceTests(unittest.TestCase):
 
         self.assertEqual(
             [
-                ("bare", None, None, None, "UNRESOLVED", "form_not_resolved", "[]"),
+                ("bare", None, "p.Caller", None, "UNRESOLVED", "bare_member_absent", "[]"),
                 ("chained", None, None, None, "UNRESOLVED", "form_not_resolved", "[]"),
             ],
             rows,

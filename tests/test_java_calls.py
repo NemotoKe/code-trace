@@ -11,6 +11,127 @@ class JavaCallTests(unittest.TestCase):
         symbols = extract_symbols("src/Orders.java", "java", source)
         return extract("src/Orders.java", "java", source, symbols)
 
+    @staticmethod
+    def _bare_site(enclosing_fqn, name, enclosing_kind="method"):
+        from codewiki.index.calls import CallSite
+
+        return CallSite(
+            "src/A.java", enclosing_fqn, enclosing_kind, 1,
+            "bare", None, name,
+        )
+
+    @staticmethod
+    def _member(owner_fqn, name, fqn=None):
+        from codewiki.index.symbols import Symbol
+
+        return Symbol(
+            "src/A.java", name, "method",
+            fqn or owner_fqn + "." + name,
+            owner_fqn, "com.acme", [], 0, name + "()", 1, 1,
+            "CONFIRMED",
+        )
+
+    def test_bare_resolution_finds_direct_member(self):
+        from codewiki.index.callgraph import resolve_bare_call
+
+        site = self._bare_site("com.acme.A.m", "helper")
+        result = resolve_bare_call(
+            site,
+            {"com.acme.A": [self._member("com.acme.A", "helper")]},
+        )
+
+        self.assertEqual(
+            ("com.acme.A", ("com.acme.A.helper",), "CONFIRMED",
+             "bare_single_member"),
+            (result.owner_fqn, result.targets, result.confidence, result.reason),
+        )
+
+    def test_bare_resolution_reports_overload_and_absent_member(self):
+        from codewiki.index.callgraph import resolve_bare_call
+
+        overloaded = resolve_bare_call(
+            self._bare_site("com.acme.A.m", "helper"),
+            {
+                "com.acme.A": [
+                    self._member("com.acme.A", "helper", "com.acme.A.helper(int)"),
+                    self._member("com.acme.A", "helper", "com.acme.A.helper"),
+                ],
+            },
+        )
+        absent = resolve_bare_call(
+            self._bare_site("com.acme.A.m", "nosuch"),
+            {"com.acme.A": []},
+        )
+
+        self.assertEqual(
+            ("com.acme.A",
+             ("com.acme.A.helper", "com.acme.A.helper(int)"),
+             "POSSIBLE", "bare_overloaded"),
+            (overloaded.owner_fqn, overloaded.targets,
+             overloaded.confidence, overloaded.reason),
+        )
+        self.assertEqual(
+            ("com.acme.A", (), "UNRESOLVED", "bare_member_absent"),
+            (absent.owner_fqn, absent.targets, absent.confidence, absent.reason),
+        )
+
+    def test_bare_resolution_uses_inherited_members(self):
+        from codewiki.index.callgraph import resolve_bare_call
+
+        result = resolve_bare_call(
+            self._bare_site("com.acme.A.m", "helper"),
+            {
+                "com.acme.Base": [self._member("com.acme.Base", "helper")],
+            },
+            {"com.acme.A": ("com.acme.Base",)},
+        )
+
+        self.assertEqual(
+            ("com.acme.A", ("com.acme.Base.helper",), "CONFIRMED",
+             "bare_inherited_single_member"),
+            (result.owner_fqn, result.targets, result.confidence, result.reason),
+        )
+
+    def test_bare_resolution_reports_inherited_overload(self):
+        from codewiki.index.callgraph import resolve_bare_call
+
+        result = resolve_bare_call(
+            self._bare_site("com.acme.A.m", "helper"),
+            {
+                "com.acme.Base": [
+                    self._member("com.acme.Base", "helper", "com.acme.Base.helper"),
+                    self._member(
+                        "com.acme.Base", "helper", "com.acme.Base.helper(int)",
+                    ),
+                ],
+            },
+            {"com.acme.A": ("com.acme.Base",)},
+        )
+
+        self.assertEqual(
+            ("com.acme.A",
+             ("com.acme.Base.helper", "com.acme.Base.helper(int)"),
+             "POSSIBLE", "bare_inherited_overloaded"),
+            (result.owner_fqn, result.targets, result.confidence, result.reason),
+        )
+
+    def test_bare_resolution_uses_innermost_nested_enclosing_type(self):
+        from codewiki.index.callgraph import resolve_bare_call
+
+        result = resolve_bare_call(
+            self._bare_site("com.acme.A.Inner.m", "helper"),
+            {
+                "com.acme.A.Inner": [
+                    self._member("com.acme.A.Inner", "helper"),
+                ],
+            },
+        )
+
+        self.assertEqual("com.acme.A.Inner", result.owner_fqn)
+        self.assertEqual(("com.acme.A.Inner.helper",), result.targets)
+        self.assertEqual("CONFIRMED", result.confidence)
+        self.assertEqual("bare_single_member", result.reason)
+
     def test_receiver_call(self):
         source = (
             "class Orders {\n"

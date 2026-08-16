@@ -227,6 +227,40 @@ def _members_with_inheritance(
     return [], False
 
 
+def resolve_bare_call(
+    site: CallSite,
+    members_by_owner: Mapping[str, Sequence[Symbol]],
+    supertypes_by_owner: Optional[Mapping[str, Tuple[str, ...]]] = None,
+) -> CallResolution:
+    """Resolve a bare call against its enclosing type and its supertypes."""
+    if site.form != "bare":
+        return _result(site, None, (), "UNRESOLVED", "no_declaration")
+
+    owner_fqn = site.enclosing_fqn
+    if site.enclosing_kind in ("method", "constructor"):
+        owner_fqn = owner_fqn.rsplit(".", 1)[0]
+    supertype_map = (
+        supertypes_by_owner if supertypes_by_owner is not None else {}
+    )
+    members, inherited = _members_with_inheritance(
+        site, owner_fqn, members_by_owner, supertype_map,
+    )
+    targets = sorted(set(member.fqn for member in members))
+    if len(members) == 1:
+        return _result(
+            site, owner_fqn, targets, "CONFIRMED",
+            "bare_inherited_single_member"
+            if inherited else "bare_single_member",
+        )
+    if len(members) > 1:
+        return _result(
+            site, owner_fqn, targets, "POSSIBLE",
+            "bare_inherited_overloaded"
+            if inherited else "bare_overloaded",
+        )
+    return _result(site, owner_fqn, (), "UNRESOLVED", "bare_member_absent")
+
+
 def resolve_receiver_call(
     site: CallSite,
     declarations: Sequence[Declaration],
