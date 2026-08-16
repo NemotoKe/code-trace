@@ -92,6 +92,9 @@ def _parser():
     column_access.add_argument(
         "--write", dest="access", action="store_const", const="WRITE"
     )
+    stats = commands.add_parser("stats")
+    stats.add_argument("--out", default=None)
+    stats.add_argument("--json", action="store_true")
     callees = commands.add_parser("callees")
     callees.add_argument("fqn")
     callees.add_argument("--out", default=None)
@@ -446,6 +449,29 @@ def _column(args):
     return 0
 
 
+def _stats(args):
+    from .query.stats import stats as query_stats
+
+    out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
+    payload = query_stats(os.path.join(out, "index.sqlite3"))
+    if args.json:
+        print(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ))
+        return 0
+
+    def print_metrics(prefix, value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                print_metrics(prefix + "." + key, nested)
+        else:
+            print("%s: %s" % (prefix, value))
+
+    for key, value in payload.items():
+        print_metrics(key, value)
+    return 0
+
+
 def _callees(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     results = query_callees(
@@ -505,6 +531,8 @@ def main(argv=None):
             return _table(args)
         if args.command == "column":
             return _column(args)
+        if args.command == "stats":
+            return _stats(args)
         if args.command == "callees":
             return _callees(args)
         return _resolve_type(args)
