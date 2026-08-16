@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -37,7 +39,54 @@ def expected_payload_keys():
     }
 
 
+def implementation_call_reasons():
+    reason_pattern = re.compile(r"[a-z_]+")
+    reasons = set()
+    source_paths = (
+        os.path.join(ROOT, "codewiki", "index", "callgraph.py"),
+        os.path.join(ROOT, "codewiki", "index", "pipeline.py"),
+    )
+    for source_path in source_paths:
+        with open(source_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=source_path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            if isinstance(node.func, ast.Name):
+                function_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                function_name = node.func.attr
+            else:
+                continue
+            if function_name not in ("_result", "CallResolution"):
+                continue
+            for literal in ast.walk(node.args[-1]):
+                if (isinstance(literal, ast.Constant)
+                        and isinstance(literal.value, str)
+                        and reason_pattern.fullmatch(literal.value)):
+                    reasons.add(literal.value)
+    return reasons
+
+
 class StatsCliIntegrationTests(unittest.TestCase):
+    def test_call_reasons_match_the_implementation(self):
+        from codewiki.query.stats import _CALL_REASONS
+
+        implementation_reasons = implementation_call_reasons()
+        catalog_reasons = set(_CALL_REASONS)
+        self.assertEqual(
+            implementation_reasons,
+            catalog_reasons,
+            "\n".join((
+                "実装にあって _CALL_REASONS に無い: {}".format(
+                    sorted(implementation_reasons - catalog_reasons)
+                ),
+                "_CALL_REASONS にあって実装に無い: {}".format(
+                    sorted(catalog_reasons - implementation_reasons)
+                ),
+            )),
+        )
+
     def test_stats_json_has_fixed_shape_and_zero_maps(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-stats-empty-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-stats-empty-out-") as out:
@@ -121,6 +170,7 @@ class StatsCliIntegrationTests(unittest.TestCase):
                     "bare_member_absent": 0,
                     "bare_inherited_single_member": 0,
                     "bare_inherited_overloaded": 0,
+                    "bare_supertype_not_internal": 0,
                     "chained_single_member": 0,
                     "chained_overloaded": 0,
                     "chained_member_absent": 0,
@@ -389,7 +439,7 @@ class StatsCliIntegrationTests(unittest.TestCase):
             queried = run_cli("stats", "--out", out)
             self.assertEqual(0, queried.returncode, queried.stderr)
             lines = queried.stdout.splitlines()
-            self.assertEqual(124, len(lines))
+            self.assertEqual(125, len(lines))
             self.assertEqual(len(lines), len(set(lines)))
             self.assertIn("files.java: 0", lines)
             self.assertIn("calls.by_form_confidence.receiver|CONFIRMED: 0", lines)
