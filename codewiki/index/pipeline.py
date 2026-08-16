@@ -240,6 +240,9 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         ))
         for owner, values in fields_by_owner_values.items()
     }
+    symbols_by_fqn = {
+        item.fqn: item for item in extracted if item.kind == "method"
+    }
     supertypes_by_owner_values = {}
     for ref, supertype_resolution in supertype_rows:
         if (supertype_resolution.outcome == "resolved"
@@ -260,6 +263,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         for confidence in ("CONFIRMED", "POSSIBLE", "UNRESOLVED")
     }
     call_rows = []
+    resolutions_by_key = {}
     for site in call_sites:
         call_forms[site.form] += 1
         if site.form == "receiver":
@@ -272,19 +276,30 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
             call_resolution = callgraph.resolve_bare_call(
                 site, members_by_owner, supertypes_by_owner,
             )
+        elif site.form == "chained":
+            call_resolution = callgraph.resolve_chained_call(
+                site, resolutions_by_key, symbols_by_fqn,
+                file_packages, type_infos, imports_by_file, lookup,
+                members_by_owner, supertypes_by_owner,
+            )
         else:
             call_resolution = callgraph.CallResolution(
                 site, None, (), "UNRESOLVED", "form_not_resolved",
             )
         call_rows.append(call_resolution)
         call_confidences[call_resolution.confidence] += 1
-    receiver_and_bare_count = call_forms["receiver"] + call_forms["bare"]
+        resolutions_by_key[(site.path, site.enclosing_fqn, site.line, site.name)] = (
+            call_resolution
+        )
+    receiver_bare_and_chained_count = (
+        call_forms["receiver"] + call_forms["bare"] + call_forms["chained"]
+    )
     call_resolved = (
         call_confidences["CONFIRMED"] + call_confidences["POSSIBLE"]
     )
     call_resolution_rate = (
-        float(call_resolved) / receiver_and_bare_count
-        if receiver_and_bare_count else 0.0
+        float(call_resolved) / receiver_bare_and_chained_count
+        if receiver_bare_and_chained_count else 0.0
     )
     call_row_count = sum(
         len(set(call_resolution.targets)) or 1

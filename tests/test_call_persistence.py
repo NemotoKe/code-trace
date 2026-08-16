@@ -313,7 +313,7 @@ class CallPersistenceTests(unittest.TestCase):
             "calls confidence CONFIRMED: 2",
             "calls confidence POSSIBLE: 0",
             "calls confidence UNRESOLVED: 4",
-            "call resolution rate (receiver and bare forms): 50.0%",
+            "call resolution rate (receiver, bare and chained forms): 50.0%",
         ):
             self.assertIn(line, completed.stdout)
         self.assertRegex(completed.stdout, r"(?m)^calls: [0-9]+\.[0-9]{3}s$")
@@ -345,7 +345,7 @@ class CallPersistenceTests(unittest.TestCase):
         self.assertEqual(
             [
                 ("bare", None, "p.Caller", None, "UNRESOLVED", "bare_member_absent", "[]"),
-                ("chained", "make", None, None, "UNRESOLVED", "form_not_resolved", "[]"),
+                ("chained", "make", None, None, "UNRESOLVED", "chained_receiver_unresolved", "[]"),
             ],
             rows,
         )
