@@ -195,9 +195,16 @@ class ResolveTypeCliTests(unittest.TestCase):
             ))
             indexed = run_cli("index", root, "--out", out, "--quiet")
             self.assertEqual(0, indexed.returncode, indexed.stderr)
-            for outcome in ("resolved", "unresolved", "external", "excluded"):
-                self.assertIn("imports outcome %s: 1" % outcome, indexed.stdout)
-            self.assertIn("internal resolution rate: 50.0%", indexed.stdout)
+            for outcome, count in {
+                "resolved": 2,
+                "unresolved": 1,
+                "external": 1,
+                "excluded": 0,
+            }.items():
+                self.assertIn(
+                    "imports outcome %s: %d" % (outcome, count), indexed.stdout
+                )
+            self.assertIn("internal resolution rate: 66.7%", indexed.stdout)
 
     def test_cli_invalid_file_and_missing_database_are_actionable_errors(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-cli-out-") as out:

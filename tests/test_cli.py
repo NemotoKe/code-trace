@@ -138,10 +138,11 @@ class CliTests(unittest.TestCase):
                 "unknown_language": 1,
                 "too_large": 1,
                 "unreadable": 1,
-                "generated": 1,
             }
             for reason, count in expected.items():
                 self.assertIn("skipped %s: %d" % (reason, count), indexed.stdout)
+            self.assertIn("files flagged generated: 1", indexed.stdout)
+            self.assertNotIn("skipped generated:", indexed.stdout)
 
             connection = open_index(os.path.join(out, "index.sqlite3"))
             try:
@@ -151,6 +152,7 @@ class CliTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(expected, json.loads(meta["scan_skipped"]))
+            self.assertNotIn("scan_skipped_generated", meta)
             for reason, count in expected.items():
                 self.assertEqual(str(count), meta["scan_skipped_" + reason])
 

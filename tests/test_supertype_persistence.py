@@ -206,9 +206,9 @@ class SupertypePersistenceTests(unittest.TestCase):
         self.assertIn("supertypes found: 4", completed.stdout)
         self.assertIn("supertypes outcome resolved: 1", completed.stdout)
         self.assertIn("supertypes outcome external: 1", completed.stdout)
-        self.assertIn("supertypes outcome unresolved: 1", completed.stdout)
-        self.assertIn("supertypes outcome excluded: 1", completed.stdout)
-        self.assertIn("supertype resolution rate: 50.0%", completed.stdout)
+        self.assertIn("supertypes outcome unresolved: 2", completed.stdout)
+        self.assertIn("supertypes outcome excluded: 0", completed.stdout)
+        self.assertIn("supertype resolution rate: 33.3%", completed.stdout)
         self.assertRegex(completed.stdout, r"(?m)^supertypes: [0-9]+\.[0-9]{3}s$")
 
 

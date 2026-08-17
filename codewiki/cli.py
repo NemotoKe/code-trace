@@ -140,6 +140,7 @@ def _index(args):
     result = pipeline.run(root, out, jobs=args.jobs, progress=progress, timings=timings)
     print("files scanned: %d" % result.files_scanned)
     print("files analyzed: %d" % result.files_analyzed)
+    print("files flagged generated: %d" % result.files_flagged_generated)
     print("symbols found: %d" % result.symbols_found)
     for reason in sorted(result.skipped):
         count = result.skipped[reason]

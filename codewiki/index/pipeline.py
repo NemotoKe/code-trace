@@ -17,14 +17,12 @@ from . import resolution, scan, sql, supertypes, symbols
 
 
 def _analyze_java_file(item):
-    root, path, language, is_generated = item
+    root, path, language = item
     try:
         text = scan.read_text(root, path)
     except OSError:
         return path, None, [], [], [], [], [], [], []
     package = symbols.package_of(text)
-    if is_generated:
-        return path, package, [], [], [], [], [], [], []
     file_symbols = symbols.extract(path, language, text)
     file_calls = calls.extract(path, language, text, file_symbols)
     file_declarations = declarations.extract(path, language, text, file_symbols)
@@ -66,6 +64,7 @@ class PipelineResult:
     sql_column_rows: int = 0
     annotations_found: int = 0
     entrypoints_found: int = 0
+    files_flagged_generated: int = 0
 
 
 def run(root: str, out_dir: str, config: Optional[Config] = None,
@@ -89,7 +88,7 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     emit("symbols", "extracting symbols")
     java_records = [record for record in records if record.language == "java"]
     analysis_items = [
-        (root, record.path, record.language, record.is_generated)
+        (root, record.path, record.language)
         for record in java_records
     ]
     analyzable_paths = {record.path for record in analyzable}
@@ -331,6 +330,9 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
     timings["persist"] = round(now - previous, 3)
     timings["total"] = round(now - started, 3)
     emit("total", "index complete")
+    files_flagged_generated = sum(
+        1 for record in records if record.is_generated
+    )
     return PipelineResult(
         db_path, len(records), len(analyzable), len(extracted), timings,
         _skipped, parallel_jobs, len(import_rows), import_forms,
@@ -338,5 +340,5 @@ def run(root: str, out_dir: str, config: Optional[Config] = None,
         supertype_outcomes, supertype_rate, len(call_sites), call_row_count,
         call_forms, call_confidences, call_resolution_rate,
         len(sql_statements), len(sql_accesses), len(sql_column_accesses),
-        len(annotations), len(entrypoint_rows),
+        len(annotations), len(entrypoint_rows), files_flagged_generated,
     )
