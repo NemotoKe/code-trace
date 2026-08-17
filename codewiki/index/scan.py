@@ -47,7 +47,7 @@ def scan(root: str, config: Config) -> Tuple[List[FileRecord], Dict[str, int]]:
     excluded = set(config.exclude_dirs)
     records = []
     skipped = {"dir_excluded": 0, "glob_excluded": 0, "unknown_language": 0,
-               "too_large": 0, "unreadable": 0, "generated": 0}
+               "too_large": 0, "unreadable": 0}
     for dirpath, dirnames, filenames in os.walk(root):
         kept = [name for name in dirnames if name not in excluded and not name.startswith(".")]
         skipped["dir_excluded"] += len(dirnames) - len(kept)
@@ -76,8 +76,6 @@ def scan(root: str, config: Config) -> Tuple[List[FileRecord], Dict[str, int]]:
                 continue
             text = raw.decode("utf-8", errors="replace")
             generated = _looks_generated(text[:8192])
-            if generated:
-                skipped["generated"] += 1
             rel = os.path.relpath(path, root).replace(os.sep, "/")
             records.append(FileRecord(
                 path=rel, language=language,
@@ -90,10 +88,9 @@ def scan(root: str, config: Config) -> Tuple[List[FileRecord], Dict[str, int]]:
 
 
 def analyzable(records: List[FileRecord]) -> List[FileRecord]:
-    return [record for record in records if record.language == "java" and not record.is_generated]
+    return [record for record in records if record.language == "java"]
 
 
 def read_text(root: str, rel_path: str) -> str:
     with open(os.path.join(root, rel_path), "rb") as stream:
         return stream.read().decode("utf-8", errors="replace")
-

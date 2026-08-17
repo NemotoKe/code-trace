@@ -30,7 +30,7 @@ class PersistenceTests(unittest.TestCase):
             timings = {}
             result = pipeline.run(root, os.path.join(root, "index-out"), jobs=1, timings=timings)
             self.assertEqual(10, result.files_scanned)
-            self.assertEqual(6, result.files_analyzed)
+            self.assertEqual(7, result.files_analyzed)
             self.assertGreater(result.symbols_found, 0)
             self.assertTrue(timings["scan"] >= 0)
             self.assertTrue(timings["symbols"] >= 0)
@@ -50,7 +50,7 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("generated", generated[0])
             self.assertEqual(1, generated[1])
             self.assertEqual(1, is_test)
-            self.assertEqual(0, connection.execute(
+            self.assertEqual(1, connection.execute(
                 "SELECT count(*) FROM symbols WHERE name = 'Generated'"
             ).fetchone()[0])
 
