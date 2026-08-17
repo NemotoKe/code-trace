@@ -10,6 +10,7 @@
 - `[gotcha]` 実測は `scan.analyzable` の返すファイルだけを対象にする。生の `os.walk` はビルド出力を数える — [gotcha/measure-with-scan-analyzable.md](gotcha/measure-with-scan-analyzable.md) #measurement #verification
 - `[gotcha]` `store/` に `index/` を import させない。委譲先は放っておくとやる。渡す物を「展開済みの組」と名指しする — [gotcha/store-layer-must-not-import-index.md](gotcha/store-layer-must-not-import-index.md) #architecture #layering #review
 - `[gotcha]` `codewiki/index/annotations.py` は作れない。`from __future__ import annotations` が名前を奪う。import 順で出たり消えたりする — [gotcha/index-package-shadows-annotations-name.md](gotcha/index-package-shadows-annotations-name.md) #python #imports #naming
+- `[project]` `is_generated` でも索引には入れる。除外はレポート段階。誤陽性で symbol がまるごと消えるため — [project/keep-generated-files-in-the-index.md](project/keep-generated-files-in-the-index.md) #scan #generated #false-positive
 - `[project]` Entry Point は Servlet / JAX-RS と main。Spring MVC は対象外。規則はコード固定。別フレームワークの目印は未聴取 — [project/entry-point-markers-in-target-codebase.md](project/entry-point-markers-in-target-codebase.md) #entrypoint #domain #scope
 - `[gotcha]` フレームワークの基底クラスは常に external。継承マーカーの判定に解決済み FQN を使うと永久に 0 件 — [gotcha/framework-supertypes-are-always-external.md](gotcha/framework-supertypes-are-always-external.md) #supertypes #resolution #entrypoint
 - `[gotcha]` SQL 文を 1 行に潰して計測しない。`--` コメントが以降を飲む。生のまま関数へ渡す — [gotcha/do-not-flatten-sql-before-analyzing.md](gotcha/do-not-flatten-sql-before-analyzing.md) #measurement #sql #verification
