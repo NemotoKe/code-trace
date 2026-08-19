@@ -59,6 +59,18 @@ def _where(query: str) -> Tuple[str, List[str]]:
     return "s.name = ?", [query]
 
 
+def is_indexed(path: str, fqn: str) -> bool:
+    connection = _readonly(path)
+    try:
+        return connection.execute(
+            "SELECT 1 FROM symbols WHERE fqn = ? LIMIT 1", (fqn,)
+        ).fetchone() is not None
+    except sqlite3.DatabaseError as exc:
+        raise QueryError("index database missing or stale; rerun index") from exc
+    finally:
+        connection.close()
+
+
 def search(connection: sqlite3.Connection, query: str, limit: Optional[int] = None,
            kind: Optional[str] = None) -> QueryResult:
     where, values = _where(query)

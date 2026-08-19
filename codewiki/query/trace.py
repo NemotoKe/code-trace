@@ -19,8 +19,8 @@ class TraceNode:
     parent_fqn: Optional[str]
 
 
-def callers_upward(path: str, fqn: str, max_depth: int = 8,
-                   max_nodes: int = 2000) -> Tuple[List[TraceNode], bool]:
+def callers_upward_bounded(path: str, fqn: str, max_depth: int = 8,
+                           max_nodes: int = 2000) -> Tuple[List[TraceNode], Optional[str]]:
     """Return one shortest upward call path for each reachable method."""
     connection = _readonly(path)
     try:
@@ -28,21 +28,21 @@ def callers_upward(path: str, fqn: str, max_depth: int = 8,
             "SELECT 1 FROM symbols WHERE fqn = ? LIMIT 1", (fqn,)
         ).fetchone()
         if known is None:
-            return [], False
+            return [], None
     except sqlite3.DatabaseError as exc:
         raise TypeQueryError("index database missing or stale; rerun index") from exc
     finally:
         connection.close()
 
     if max_depth <= 0 or max_nodes <= 0:
-        return [], True
+        return [], "depth" if max_depth <= 0 else "nodes"
 
     nodes = []
     # One visit per FQN keeps cycles finite and preserves one shortest path
     # through heavy call-graph re-convergence.
     visited = {fqn}
     frontier = [(fqn, 0)]
-    truncated = False
+    reason = None
 
     while frontier:
         next_frontier = []
@@ -58,7 +58,7 @@ def callers_upward(path: str, fqn: str, max_depth: int = 8,
                     result.caller_fqn not in visited
                     for result in boundary_callers
                 ):
-                    truncated = True
+                    reason = "depth"
                 continue
 
             try:
@@ -72,7 +72,7 @@ def callers_upward(path: str, fqn: str, max_depth: int = 8,
                 if result.caller_fqn in visited:
                     continue
                 if len(nodes) >= max_nodes:
-                    truncated = True
+                    reason = "nodes"
                     break
                 visited.add(result.caller_fqn)
                 next_frontier.append((result.caller_fqn, current_depth + 1))
@@ -88,18 +88,27 @@ def callers_upward(path: str, fqn: str, max_depth: int = 8,
                     )
                 )
                 if len(nodes) >= max_nodes:
-                    truncated = True
+                    reason = "nodes"
                     break
 
-            if truncated:
+            if reason is not None:
                 break
 
-        if truncated:
+        if reason is not None:
             break
         frontier = next_frontier
 
     nodes.sort(key=lambda item: (item.depth, item.fqn, item.path, item.line))
-    return nodes, truncated
+    return nodes, reason
+
+
+def callers_upward(path: str, fqn: str, max_depth: int = 8,
+                   max_nodes: int = 2000) -> Tuple[List[TraceNode], bool]:
+    """Return one shortest upward call path for each reachable method."""
+    nodes, reason = callers_upward_bounded(
+        path, fqn, max_depth=max_depth, max_nodes=max_nodes
+    )
+    return nodes, reason is not None
 
 
 def path_to(nodes: List[TraceNode], fqn: str) -> List[TraceNode]:

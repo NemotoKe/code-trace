@@ -161,6 +161,22 @@ class TraceQueryTests(unittest.TestCase):
         self.assertTrue(truncated)
         self.assertEqual(["p.Service.service"], [node.fqn for node in nodes])
 
+    def test_callers_upward_bounded_reports_depth_reason(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Service.service", "src/p/Service.java")
+        self._method("p.Entry.entry", "src/p/Entry.java")
+        self._call("p.Service.service", "p.Repo.repo", 11)
+        self._call("p.Entry.entry", "p.Service.service", 21)
+
+        from codewiki.query.trace import callers_upward_bounded
+
+        nodes, reason = callers_upward_bounded(
+            self.db_path, "p.Repo.repo", max_depth=1
+        )
+
+        self.assertEqual("depth", reason)
+        self.assertEqual(["p.Service.service"], [node.fqn for node in nodes])
+
     def test_max_depth_at_end_of_chain_does_not_mark_truncated(self):
         self._method("p.Repo.repo", "src/p/Repo.java")
         self._method("p.Service.service", "src/p/Service.java")
@@ -175,6 +191,25 @@ class TraceQueryTests(unittest.TestCase):
         )
 
         self.assertFalse(truncated)
+        self.assertEqual(
+            ["p.Service.service", "p.Entry.entry"],
+            [node.fqn for node in nodes],
+        )
+
+    def test_callers_upward_bounded_at_end_of_chain_has_no_reason(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Service.service", "src/p/Service.java")
+        self._method("p.Entry.entry", "src/p/Entry.java")
+        self._call("p.Service.service", "p.Repo.repo", 11)
+        self._call("p.Entry.entry", "p.Service.service", 21)
+
+        from codewiki.query.trace import callers_upward_bounded
+
+        nodes, reason = callers_upward_bounded(
+            self.db_path, "p.Repo.repo", max_depth=2
+        )
+
+        self.assertIsNone(reason)
         self.assertEqual(
             ["p.Service.service", "p.Entry.entry"],
             [node.fqn for node in nodes],
@@ -196,6 +231,27 @@ class TraceQueryTests(unittest.TestCase):
         )
 
         self.assertTrue(truncated)
+        self.assertEqual(
+            ["p.Service.service", "p.Entry.entry"],
+            [node.fqn for node in nodes],
+        )
+
+    def test_callers_upward_bounded_past_end_of_chain_reports_depth_reason(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Service.service", "src/p/Service.java")
+        self._method("p.Entry.entry", "src/p/Entry.java")
+        self._method("p.Controller.controller", "src/p/Controller.java")
+        self._call("p.Service.service", "p.Repo.repo", 11)
+        self._call("p.Entry.entry", "p.Service.service", 21)
+        self._call("p.Controller.controller", "p.Entry.entry", 31)
+
+        from codewiki.query.trace import callers_upward_bounded
+
+        nodes, reason = callers_upward_bounded(
+            self.db_path, "p.Repo.repo", max_depth=2
+        )
+
+        self.assertEqual("depth", reason)
         self.assertEqual(
             ["p.Service.service", "p.Entry.entry"],
             [node.fqn for node in nodes],
@@ -256,6 +312,44 @@ class TraceQueryTests(unittest.TestCase):
         self.assertTrue(truncated)
         self.assertEqual(["p.Service.service"], [node.fqn for node in nodes])
 
+    def test_callers_upward_bounded_node_limit_reports_nodes_reason(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Service.service", "src/p/Service.java")
+        self._method("p.Entry.entry", "src/p/Entry.java")
+        self._call("p.Service.service", "p.Repo.repo", 11)
+        self._call("p.Entry.entry", "p.Service.service", 21)
+
+        from codewiki.query.trace import callers_upward_bounded
+
+        nodes, reason = callers_upward_bounded(
+            self.db_path, "p.Repo.repo", max_depth=8, max_nodes=1
+        )
+
+        self.assertEqual("nodes", reason)
+        self.assertEqual(["p.Service.service"], [node.fqn for node in nodes])
+
+    def test_callers_upward_bounded_non_positive_budgets_report_their_reason(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+
+        from codewiki.query.trace import callers_upward_bounded
+
+        cases = [
+            (0, 8, "depth"),
+            (8, 0, "nodes"),
+            (0, 0, "depth"),
+        ]
+        for max_depth, max_nodes, expected_reason in cases:
+            with self.subTest(max_depth=max_depth, max_nodes=max_nodes):
+                self.assertEqual(
+                    ([], expected_reason),
+                    callers_upward_bounded(
+                        self.db_path,
+                        "p.Repo.repo",
+                        max_depth=max_depth,
+                        max_nodes=max_nodes,
+                    ),
+                )
+
     def test_unknown_fqn_returns_empty_non_truncated_result(self):
         from codewiki.query.trace import callers_upward, path_to
 
@@ -264,6 +358,14 @@ class TraceQueryTests(unittest.TestCase):
         self.assertEqual([], nodes)
         self.assertFalse(truncated)
         self.assertEqual([], path_to(nodes, "p.Missing.missing"))
+
+    def test_unknown_fqn_returns_no_bounded_reason(self):
+        from codewiki.query.trace import callers_upward_bounded
+
+        self.assertEqual(
+            ([], None),
+            callers_upward_bounded(self.db_path, "p.Missing.missing", max_depth=0),
+        )
 
     def test_entrypoints_among_returns_sorted_kinds_for_requested_fqns(self):
         self._entrypoints(
