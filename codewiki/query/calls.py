@@ -99,10 +99,17 @@ def _caller_rows(connection: sqlite3.Connection, target_fqn: str,
     ]
 
 
-def _ancestor_types(connection: sqlite3.Connection, owner_fqn: str) -> List[str]:
+def _ancestor_types(
+    connection: sqlite3.Connection,
+    owner_fqn: str,
+    max_hops: Optional[int] = None,
+) -> Tuple[List[str], bool]:
+    hop_budget = None if max_hops is None else max(0, max_hops)
     visited = {owner_fqn}
     frontier = [owner_fqn]
     ancestors = []
+    hops = 0
+    truncated = False
     while frontier:
         next_frontier = []
         for current in frontier:
@@ -113,6 +120,12 @@ def _ancestor_types(connection: sqlite3.Connection, owner_fqn: str) -> List[str]
                 "ORDER BY relation, target_fqn, line, supertype_id",
                 (current,),
             ).fetchall()
+            if hop_budget is not None and hops >= hop_budget:
+                if any(
+                    ancestor_fqn not in visited for (ancestor_fqn,) in rows
+                ):
+                    truncated = True
+                continue
             for (ancestor_fqn,) in rows:
                 if ancestor_fqn in visited:
                     continue
@@ -120,10 +133,15 @@ def _ancestor_types(connection: sqlite3.Connection, owner_fqn: str) -> List[str]
                 ancestors.append(ancestor_fqn)
                 next_frontier.append(ancestor_fqn)
         frontier = next_frontier
-    return ancestors
+        hops += 1
+    return ancestors, truncated
 
 
-def callers(path: str, fqn: str) -> List[CallerResult]:
+def callers_bounded(
+    path: str,
+    fqn: str,
+    max_dispatch_hops: Optional[int] = None,
+) -> Tuple[List[CallerResult], bool]:
     """Return indexed direct and interface-dispatched callers of a method."""
     connection = _readonly(path)
     try:
@@ -134,11 +152,14 @@ def callers(path: str, fqn: str) -> List[CallerResult]:
             (fqn,),
         ).fetchone()
         if method is None:
-            return []
+            return [], False
         direct = _caller_rows(connection, fqn, None)
         expanded = []
         seen_call_ids = set()
-        for ancestor_type in _ancestor_types(connection, method[1]):
+        ancestor_types, truncated = _ancestor_types(
+            connection, method[1], max_hops=max_dispatch_hops
+        )
+        for ancestor_type in ancestor_types:
             ancestor_method = ancestor_type + "." + method[0]
             for call_id, result in _caller_rows(
                 connection, ancestor_method, ancestor_method
@@ -153,8 +174,14 @@ def callers(path: str, fqn: str) -> List[CallerResult]:
                 item[1].name, item[0],
             )
         )
-        return [result for _call_id, result in direct + expanded]
+        return [result for _call_id, result in direct + expanded], truncated
     except sqlite3.DatabaseError as exc:
         raise TypeQueryError("index database missing or stale; rerun index") from exc
     finally:
         connection.close()
+
+
+def callers(path: str, fqn: str) -> List[CallerResult]:
+    """Return indexed direct and interface-dispatched callers of a method."""
+    results, _truncated = callers_bounded(path, fqn)
+    return results

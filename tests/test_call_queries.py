@@ -273,6 +273,125 @@ class CallQueryTests(unittest.TestCase):
             result,
         )
 
+    def test_callers_bounded_stops_at_dispatch_hop_budget(self):
+        c_file_id = self._file("src/graph/C.java", package="graph")
+        self._symbol(c_file_id, "C", "graph.C", kind="class")
+        self._symbol(c_file_id, "run", "graph.C.run", "graph.C")
+        b_file_id = self._file("src/graph/B.java", package="graph")
+        self._symbol(b_file_id, "B", "graph.B", kind="class")
+        self._symbol(b_file_id, "run", "graph.B.run", "graph.B")
+        a_file_id = self._file("src/graph/A.java", package="graph")
+        self._symbol(a_file_id, "A", "graph.A", kind="class")
+        self._symbol(a_file_id, "run", "graph.A.run", "graph.A")
+        self._supertype(c_file_id, "graph.C", "graph.B")
+        self._supertype(b_file_id, "graph.B", "graph.A")
+
+        direct_file_id = self._file("src/graph/Direct.java", package="graph")
+        self._symbol(direct_file_id, "invoke", "graph.Direct.invoke", "graph.Direct")
+        self._call(
+            direct_file_id, "graph.Direct.invoke", 1, "receiver", "c", "run",
+            target_fqn="graph.C.run", confidence="CONFIRMED",
+            reason="single_member",
+        )
+        b_caller_file_id = self._file("src/graph/BCaller.java", package="graph")
+        self._symbol(
+            b_caller_file_id, "invoke", "graph.BCaller.invoke", "graph.BCaller"
+        )
+        self._call(
+            b_caller_file_id, "graph.BCaller.invoke", 2, "receiver", "b", "run",
+            target_fqn="graph.B.run", confidence="CONFIRMED",
+            reason="single_member",
+        )
+        a_caller_file_id = self._file("src/graph/ACaller.java", package="graph")
+        self._symbol(
+            a_caller_file_id, "invoke", "graph.ACaller.invoke", "graph.ACaller"
+        )
+        self._call(
+            a_caller_file_id, "graph.ACaller.invoke", 3, "receiver", "a", "run",
+            target_fqn="graph.A.run", confidence="CONFIRMED",
+            reason="single_member",
+        )
+
+        from codewiki.query.calls import callers, callers_bounded
+
+        one_hop, one_hop_truncated = callers_bounded(
+            self.db_path, "graph.C.run", max_dispatch_hops=1
+        )
+        unbounded = callers(self.db_path, "graph.C.run")
+        two_hops, two_hops_truncated = callers_bounded(
+            self.db_path, "graph.C.run", max_dispatch_hops=2
+        )
+
+        self.assertEqual([item.caller_fqn for item in one_hop], [
+            "graph.Direct.invoke", "graph.BCaller.invoke",
+        ])
+        self.assertTrue(one_hop_truncated)
+        zero_hops, zero_hops_truncated = callers_bounded(
+            self.db_path, "graph.C.run", max_dispatch_hops=0
+        )
+        negative_hops, negative_hops_truncated = callers_bounded(
+            self.db_path, "graph.C.run", max_dispatch_hops=-1
+        )
+        self.assertEqual([item.caller_fqn for item in zero_hops], [
+            "graph.Direct.invoke",
+        ])
+        self.assertEqual(zero_hops, negative_hops)
+        self.assertTrue(zero_hops_truncated)
+        self.assertTrue(negative_hops_truncated)
+        self.assertEqual(unbounded, two_hops)
+        self.assertFalse(two_hops_truncated)
+
+    def test_callers_bounded_reports_no_truncation_without_supertype_or_for_unknown(self):
+        file_id = self._file("src/p/Solo.java")
+        self._symbol(file_id, "run", "p.Solo.run", "p.Solo")
+
+        from codewiki.query.calls import callers_bounded
+
+        self.assertEqual(([], False), callers_bounded(
+            self.db_path, "p.Solo.run", max_dispatch_hops=0
+        ))
+        self.assertEqual(([], False), callers_bounded(
+            self.db_path, "p.Missing.run", max_dispatch_hops=0
+        ))
+
+    def test_ancestor_types_deduplicates_diamond_and_reports_real_boundary(self):
+        c_file_id = self._file("src/graph/C.java", package="graph")
+        b_file_id = self._file("src/graph/B.java", package="graph")
+        d_file_id = self._file("src/graph/D.java", package="graph")
+        a_file_id = self._file("src/graph/A.java", package="graph")
+        self._supertype(c_file_id, "graph.C", "graph.B", line=2)
+        self._supertype(c_file_id, "graph.C", "graph.D", line=3)
+        self._supertype(b_file_id, "graph.B", "graph.A", line=4)
+        self._supertype(d_file_id, "graph.D", "graph.A", line=5)
+
+        from codewiki.query.calls import _ancestor_types
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            one_hop = _ancestor_types(connection, "graph.C", max_hops=1)
+            two_hops = _ancestor_types(connection, "graph.C", max_hops=2)
+        finally:
+            connection.close()
+
+        self.assertEqual((['graph.B', 'graph.D'], True), one_hop)
+        self.assertEqual((['graph.B', 'graph.D', 'graph.A'], False), two_hops)
+
+    def test_ancestor_types_negative_budget_matches_zero_for_visited_boundary(self):
+        file_id = self._file("src/graph/X.java", package="graph")
+        self._supertype(file_id, "graph.X", "graph.X")
+
+        from codewiki.query.calls import _ancestor_types
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            zero_hops = _ancestor_types(connection, "graph.X", max_hops=0)
+            negative_hops = _ancestor_types(connection, "graph.X", max_hops=-1)
+        finally:
+            connection.close()
+
+        self.assertEqual(([], False), zero_hops)
+        self.assertEqual(zero_hops, negative_hops)
+
     def test_callers_cycle_in_supertype_rows_terminates(self):
         owner_file_id = self._file("src/cycle/A.java", package="cycle")
         self._symbol(owner_file_id, "A", "cycle.A", kind="class")
