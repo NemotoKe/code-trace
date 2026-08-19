@@ -161,6 +161,87 @@ class TraceQueryTests(unittest.TestCase):
         self.assertTrue(truncated)
         self.assertEqual(["p.Service.service"], [node.fqn for node in nodes])
 
+    def test_max_depth_at_end_of_chain_does_not_mark_truncated(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Service.service", "src/p/Service.java")
+        self._method("p.Entry.entry", "src/p/Entry.java")
+        self._call("p.Service.service", "p.Repo.repo", 11)
+        self._call("p.Entry.entry", "p.Service.service", 21)
+
+        from codewiki.query.trace import callers_upward
+
+        nodes, truncated = callers_upward(
+            self.db_path, "p.Repo.repo", max_depth=2
+        )
+
+        self.assertFalse(truncated)
+        self.assertEqual(
+            ["p.Service.service", "p.Entry.entry"],
+            [node.fqn for node in nodes],
+        )
+
+    def test_max_depth_past_end_of_chain_marks_truncated(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Service.service", "src/p/Service.java")
+        self._method("p.Entry.entry", "src/p/Entry.java")
+        self._method("p.Controller.controller", "src/p/Controller.java")
+        self._call("p.Service.service", "p.Repo.repo", 11)
+        self._call("p.Entry.entry", "p.Service.service", 21)
+        self._call("p.Controller.controller", "p.Entry.entry", 31)
+
+        from codewiki.query.trace import callers_upward
+
+        nodes, truncated = callers_upward(
+            self.db_path, "p.Repo.repo", max_depth=2
+        )
+
+        self.assertTrue(truncated)
+        self.assertEqual(
+            ["p.Service.service", "p.Entry.entry"],
+            [node.fqn for node in nodes],
+        )
+
+    def test_boundary_node_with_only_visited_caller_does_not_truncate(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Short.short", "src/p/Short.java")
+        self._method("p.Root.root", "src/p/Root.java")
+        self._method("p.Boundary.boundary", "src/p/Boundary.java")
+        self._call("p.Short.short", "p.Repo.repo", 11)
+        self._call("p.Root.root", "p.Repo.repo", 12)
+        self._call("p.Boundary.boundary", "p.Root.root", 21)
+        self._call("p.Short.short", "p.Boundary.boundary", 31)
+
+        from codewiki.query.trace import callers_upward
+
+        nodes, truncated = callers_upward(
+            self.db_path, "p.Repo.repo", max_depth=2
+        )
+
+        self.assertFalse(truncated)
+        self.assertEqual(
+            ["p.Root.root", "p.Short.short", "p.Boundary.boundary"],
+            [node.fqn for node in nodes],
+        )
+
+    def test_boundary_node_with_no_callers_does_not_truncate(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Service.service", "src/p/Service.java")
+        self._method("p.Entry.entry", "src/p/Entry.java")
+        self._call("p.Service.service", "p.Repo.repo", 11)
+        self._call("p.Entry.entry", "p.Service.service", 21)
+
+        from codewiki.query.trace import callers_upward
+
+        nodes, truncated = callers_upward(
+            self.db_path, "p.Repo.repo", max_depth=2
+        )
+
+        self.assertFalse(truncated)
+        self.assertEqual(
+            ["p.Service.service", "p.Entry.entry"],
+            [node.fqn for node in nodes],
+        )
+
     def test_max_nodes_stops_as_soon_as_the_limit_is_recorded(self):
         self._method("p.Repo.repo", "src/p/Repo.java")
         self._method("p.Service.service", "src/p/Service.java")
