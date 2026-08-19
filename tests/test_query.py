@@ -89,6 +89,27 @@ class QueryTests(unittest.TestCase):
         result = search_path(self.result.db_path, "OrderService")
         self.assertGreater(result.count, 0)
 
+    def test_is_indexed_distinguishes_present_and_absent_fqns(self):
+        from codewiki.query.symbols import is_indexed
+
+        self.assertTrue(
+            is_indexed(self.result.db_path, "com.acme.OrderService.cancel")
+        )
+        self.assertFalse(
+            is_indexed(self.result.db_path, "com.acme.Missing.missing")
+        )
+
+    def test_is_indexed_wraps_missing_database_errors(self):
+        from codewiki.query.symbols import QueryError, is_indexed
+
+        missing_path = os.path.join(self.root, "missing.sqlite3")
+        with self.assertRaises(QueryError) as database_error:
+            is_indexed(missing_path, "com.acme.Missing.missing")
+        self.assertEqual(
+            "index database missing or stale; rerun index",
+            str(database_error.exception),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
