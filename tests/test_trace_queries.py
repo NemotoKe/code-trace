@@ -298,7 +298,7 @@ class TraceQueryTests(unittest.TestCase):
             [node.fqn for node in nodes],
         )
 
-    def test_max_nodes_stops_as_soon_as_the_limit_is_recorded(self):
+    def test_max_nodes_at_end_of_chain_does_not_mark_truncated(self):
         self._method("p.Repo.repo", "src/p/Repo.java")
         self._method("p.Service.service", "src/p/Service.java")
         self._call("p.Service.service", "p.Repo.repo", 11)
@@ -309,7 +309,21 @@ class TraceQueryTests(unittest.TestCase):
             self.db_path, "p.Repo.repo", max_nodes=1
         )
 
-        self.assertTrue(truncated)
+        self.assertFalse(truncated)
+        self.assertEqual(["p.Service.service"], [node.fqn for node in nodes])
+
+    def test_callers_upward_bounded_at_node_limit_has_no_reason(self):
+        self._method("p.Repo.repo", "src/p/Repo.java")
+        self._method("p.Service.service", "src/p/Service.java")
+        self._call("p.Service.service", "p.Repo.repo", 11)
+
+        from codewiki.query.trace import callers_upward_bounded
+
+        nodes, reason = callers_upward_bounded(
+            self.db_path, "p.Repo.repo", max_nodes=1
+        )
+
+        self.assertIsNone(reason)
         self.assertEqual(["p.Service.service"], [node.fqn for node in nodes])
 
     def test_callers_upward_bounded_node_limit_reports_nodes_reason(self):

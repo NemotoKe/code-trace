@@ -87,9 +87,6 @@ def callers_upward_bounded(path: str, fqn: str, max_depth: int = 8,
                         current_fqn,
                     )
                 )
-                if len(nodes) >= max_nodes:
-                    reason = "nodes"
-                    break
 
             if reason is not None:
                 break
