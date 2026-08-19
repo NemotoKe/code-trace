@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from ..javalang import JAVA_LANG_TYPES
@@ -123,14 +123,17 @@ def resolve_type_path(path: str, name: str, from_path: str) -> TypeResolutionRes
 resolve_type = resolve_type_path
 
 
-def subtypes(path: str, fqn: str) -> List[SubtypeResult]:
-    """Return all indexed subtypes of an indexed type."""
+def subtypes_bounded(
+    path: str, fqn: str, max_candidates: Optional[int] = None
+) -> Tuple[List[SubtypeResult], bool]:
+    """Return indexed subtypes, optionally stopping at a result budget."""
     connection = _readonly(path)
     try:
         frontier = [fqn]
         visited = {fqn}
         distance = 0
         results = []
+        budget = None if max_candidates is None else max(0, max_candidates)
         while frontier:
             candidates = {}
             for current in frontier:
@@ -156,15 +159,26 @@ def subtypes(path: str, fqn: str) -> List[SubtypeResult]:
                     if previous is None or edge_key < previous[0]:
                         candidates[owner_fqn] = (edge_key, subtype)
 
+            ordered_candidates = sorted(candidates)
             frontier = []
-            for owner_fqn in sorted(candidates):
+            for owner_fqn in ordered_candidates:
                 visited.add(owner_fqn)
                 subtype = candidates[owner_fqn][1]
                 results.append(subtype)
                 frontier.append(owner_fqn)
+                if budget is not None and len(results) > budget:
+                    return sorted(
+                        results[:budget], key=lambda item: (item.distance, item.fqn)
+                    ), True
             distance += 1
-        return sorted(results, key=lambda item: (item.distance, item.fqn))
+        return sorted(results, key=lambda item: (item.distance, item.fqn)), False
     except sqlite3.DatabaseError as exc:
         raise TypeQueryError("index database missing or stale; rerun index") from exc
     finally:
         connection.close()
+
+
+def subtypes(path: str, fqn: str) -> List[SubtypeResult]:
+    """Return all indexed subtypes of an indexed type."""
+    results, _truncated = subtypes_bounded(path, fqn)
+    return results
