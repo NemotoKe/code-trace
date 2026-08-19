@@ -1125,6 +1125,120 @@ class JavaCallGraphTests(unittest.TestCase):
             ),
         )
 
+    def test_external_for_name_receiver_is_reflective_dispatch(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(String name) { Class.forName(name); } }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "reflective_dispatch"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_external_invoke_receiver_is_reflective_dispatch(self):
+        source = (
+            "package p;\n"
+            "import java.lang.reflect.Method;\n"
+            "class Caller { void run() { Method.invoke(); } }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "reflective_dispatch"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_confirmed_internal_invoke_keeps_existing_reason(self):
+        source = (
+            "package p;\n"
+            "class Caller { void run(Worker worker) { worker.invoke(); } }\n"
+            "class Worker { void invoke() {} }\n"
+        )
+
+        resolutions, _declarations = self._resolve_receivers(source)
+
+        self.assertEqual(
+            ("p.Worker", ("p.Worker.invoke",), "CONFIRMED", "single_member"),
+            (
+                resolutions[0].owner_fqn,
+                resolutions[0].targets,
+                resolutions[0].confidence,
+                resolutions[0].reason,
+            ),
+        )
+
+    def test_unresolved_chained_new_instance_is_reflective_dispatch(self):
+        from codewiki.index.callgraph import resolve_chained_call
+        from codewiki.index.calls import CallSite
+
+        site = CallSite(
+            "src/Use.java", "p.Caller.run", "method", 3,
+            "chained", "forName", "newInstance",
+        )
+        resolution = resolve_chained_call(
+            site, {}, {}, {}, [], {}, None, {}, {},
+        )
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "reflective_dispatch"),
+            (
+                resolution.owner_fqn,
+                resolution.targets,
+                resolution.confidence,
+                resolution.reason,
+            ),
+        )
+
+    def test_unresolved_chained_invoke_is_reflective_dispatch(self):
+        from codewiki.index.callgraph import resolve_chained_call
+        from codewiki.index.calls import CallSite
+
+        site = CallSite(
+            "src/Use.java", "p.Caller.run", "method", 3,
+            "chained", "make", "invoke",
+        )
+        resolution = resolve_chained_call(
+            site, {}, {}, {}, [], {}, None, {}, {},
+        )
+
+        self.assertEqual(
+            (None, (), "UNRESOLVED", "reflective_dispatch"),
+            (
+                resolution.owner_fqn,
+                resolution.targets,
+                resolution.confidence,
+                resolution.reason,
+            ),
+        )
+
+    def test_unresolved_chained_non_reflective_call_keeps_existing_reason(self):
+        from codewiki.index.callgraph import resolve_chained_call
+        from codewiki.index.calls import CallSite
+
+        site = CallSite(
+            "src/Use.java", "p.Caller.run", "method", 3,
+            "chained", "make", "finish",
+        )
+        resolution = resolve_chained_call(
+            site, {}, {}, {}, [], {}, None, {}, {},
+        )
+
+        self.assertEqual("chained_receiver_unresolved", resolution.reason)
+
     def test_unknown_type_receiver_stays_no_declaration(self):
         source = (
             "package p;\n"

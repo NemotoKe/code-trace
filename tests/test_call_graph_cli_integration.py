@@ -317,6 +317,44 @@ class CallGraphCliIntegrationTests(unittest.TestCase):
                 payload["results"],
             )
 
+    def test_reflective_dispatch_calls_are_persisted(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-reflective-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-reflective-out-") as out:
+            write_file(
+                root,
+                "src/p/ReflectiveCaller.java",
+                "package p;\n"
+                "public class ReflectiveCaller {\n"
+                "    void run(String name) {\n"
+                "        Class.forName(name).newInstance();\n"
+                "    }\n"
+                "}\n",
+            )
+            self.index_repository(root, out)
+
+            rows = call_rows(out)
+
+        self.assertEqual(2, len(rows))
+        self.assertEqual(
+            [
+                (
+                    "chained", "forName", "newInstance", None, None,
+                    "UNRESOLVED", "reflective_dispatch", [],
+                ),
+                (
+                    "receiver", "Class", "forName", None, None,
+                    "UNRESOLVED", "reflective_dispatch", [],
+                ),
+            ],
+            [
+                (
+                    row[3], row[4], row[5], row[6], row[7], row[8],
+                    row[9], row[10],
+                )
+                for row in sorted(rows, key=lambda row: row[3])
+            ],
+        )
+
     def test_comments_and_text_blocks_produce_no_call_rows_or_callees(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-noise-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-noise-out-") as out:

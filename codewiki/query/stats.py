@@ -23,6 +23,7 @@ _CALL_REASONS = (
     "no_declaration",
     "type_unresolved",
     "receiver_not_internal",
+    "reflective_dispatch",
     "single_member",
     "overloaded",
     "member_absent",

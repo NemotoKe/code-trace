@@ -46,6 +46,7 @@ _DECLARATION_INDEX_CACHE: Dict[
 _TYPE_INDEX_CACHE: Dict[
     int, Tuple[Sequence[TypeInfo], int, _TypeIndex]
 ] = {}
+_REFLECTIVE_NAMES = frozenset(("forName", "newInstance", "invoke"))
 
 
 def _result(site: CallSite, owner_fqn: Optional[str], targets,
@@ -326,7 +327,10 @@ def resolve_receiver_call(
         if type_resolution.outcome in ("external", "excluded"):
             return _result(
                 site, None, (),
-                "UNRESOLVED", "receiver_not_internal",
+                "UNRESOLVED",
+                "reflective_dispatch"
+                if site.name in _REFLECTIVE_NAMES
+                else "receiver_not_internal",
             )
         return _result(site, None, (), "UNRESOLVED", "no_declaration")
 
@@ -392,7 +396,10 @@ def resolve_chained_call(
     if (previous is None or previous.confidence != "CONFIRMED"
             or len(previous.targets) != 1):
         return _result(
-            site, None, (), "UNRESOLVED", "chained_receiver_unresolved",
+            site, None, (), "UNRESOLVED",
+            "reflective_dispatch"
+            if site.name in _REFLECTIVE_NAMES
+            else "chained_receiver_unresolved",
         )
 
     previous_symbol = symbols_by_fqn.get(previous.targets[0])
