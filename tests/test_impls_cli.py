@@ -45,7 +45,75 @@ def write_hierarchy(root):
     ))
 
 
+def write_five_subtype_hierarchy(root):
+    write_file(root, "src/demo/Base.java", (
+        "package demo;\n"
+        "public interface Base {}\n"
+    ))
+    for number in range(1, 6):
+        write_file(root, "src/demo/Sub%d.java" % number, (
+            "package demo;\n"
+            "public class Sub%d implements Base {}\n" % number
+        ))
+
+
 class ImplsCliTests(unittest.TestCase):
+    def test_implementation_limit_bounds_search_and_precedes_display_limit(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-impls-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-impls-out-") as out:
+            write_five_subtype_hierarchy(root)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            unbounded = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--json"
+            ).stdout)
+            limited_result = run_cli(
+                "impls", "demo.Base", "--out", out, "--json",
+                "--implementation-limit", "3",
+            )
+            limited = json.loads(limited_result.stdout)
+            boundary = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--json",
+                "--implementation-limit", "5",
+            ).stdout)
+            zero = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--json",
+                "--implementation-limit", "0",
+            ).stdout)
+            both = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--json",
+                "--implementation-limit", "3", "--limit", "1",
+            ).stdout)
+            human = run_cli(
+                "impls", "demo.Base", "--out", out,
+                "--implementation-limit", "3",
+            )
+
+            self.assertEqual(
+                ["demo.Sub1", "demo.Sub2", "demo.Sub3", "demo.Sub4", "demo.Sub5"],
+                [item["fqn"] for item in unbounded["results"]],
+            )
+            self.assertEqual(0, limited_result.returncode, limited_result.stderr)
+            self.assertTrue(limited["truncated"])
+            self.assertEqual("TRUNCATED", limited["status"])
+            self.assertEqual("candidates", limited["truncation_reason"])
+            self.assertEqual(
+                ["demo.Sub1", "demo.Sub2", "demo.Sub3"],
+                [item["fqn"] for item in limited["results"]],
+            )
+            self.assertFalse(boundary["truncated"])
+            self.assertIsNone(boundary["truncation_reason"])
+            self.assertEqual(unbounded["results"], boundary["results"])
+            self.assertTrue(zero["truncated"])
+            self.assertEqual("candidates", zero["truncation_reason"])
+            self.assertEqual([], zero["results"])
+            self.assertEqual(1, both["count"])
+            self.assertTrue(both["truncated"])
+            self.assertEqual("candidates", both["truncation_reason"])
+            self.assertNotIn("truncated: limit reached", human.stdout)
+            self.assertEqual("3 subtypes", human.stdout.splitlines()[-1])
+
     def test_json_status_distinguishes_complete_truncated_and_not_indexed(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-impls-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-impls-out-") as out:
