@@ -12,6 +12,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARGET = "status.StatusUpdateServiceWithAnExcessivelyLongName.updateStatus"
 NO_ENTRYPOINT_TARGET = "status.Unreached.run"
+NOT_INDEXED_TARGET = "status.NotIndexed.run"
 SERVICE = "app.StatusService.invoke"
 MAIN = "batch.LongRunningJobWithAnExcessivelyLongName.main"
 SERVLET = "web.StatusServlet.doPost"
@@ -140,6 +141,7 @@ class TraceCliIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 [
                     "fqn", "depth", "entrypoints_only", "count", "truncated",
+                    "status", "truncation_reason", "boundaries",
                     "max_depth_reached", "results",
                 ],
                 list(payload.keys()),
@@ -149,6 +151,9 @@ class TraceCliIntegrationTests(unittest.TestCase):
             self.assertFalse(payload["entrypoints_only"])
             self.assertEqual(3, payload["count"])
             self.assertFalse(payload["truncated"])
+            self.assertEqual("COMPLETE", payload["status"])
+            self.assertIsNone(payload["truncation_reason"])
+            self.assertEqual([], payload["boundaries"])
             self.assertEqual(2, payload["max_depth_reached"])
             self.assertEqual(
                 [
@@ -209,6 +214,9 @@ class TraceCliIntegrationTests(unittest.TestCase):
             payload = json.loads(queried.stdout)
             self.assertEqual(1, payload["depth"])
             self.assertTrue(payload["truncated"])
+            self.assertEqual("TRUNCATED", payload["status"])
+            self.assertEqual("depth", payload["truncation_reason"])
+            self.assertEqual([], payload["boundaries"])
             self.assertEqual(1, payload["count"])
             self.assertEqual(1, payload["max_depth_reached"])
             self.assertEqual(SERVICE, payload["results"][0]["fqn"])
@@ -244,6 +252,7 @@ class TraceCliIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 [
                     "fqn", "depth", "entrypoints_only", "count", "truncated",
+                    "status", "truncation_reason", "boundaries",
                     "max_depth_reached", "results",
                 ],
                 list(payload.keys()),
@@ -251,6 +260,9 @@ class TraceCliIntegrationTests(unittest.TestCase):
             self.assertEqual(2, payload["count"])
             self.assertTrue(payload["entrypoints_only"])
             self.assertFalse(payload["truncated"])
+            self.assertEqual("COMPLETE", payload["status"])
+            self.assertIsNone(payload["truncation_reason"])
+            self.assertEqual([], payload["boundaries"])
             self.assertEqual(2, payload["max_depth_reached"])
             self.assertEqual(
                 [
@@ -364,6 +376,97 @@ class TraceCliIntegrationTests(unittest.TestCase):
                 ],
                 limited.stdout.splitlines(),
             )
+
+    def test_trace_up_json_state_vocabulary_plain_and_entrypoints(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-trace-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-trace-out-") as out:
+            self._index(root, out)
+
+            cases = [
+                (TARGET, [], "COMPLETE", None, False),
+                (TARGET, ["--depth", "1"], "TRUNCATED", "depth", False),
+                (TARGET, ["--limit", "1"], "TRUNCATED", "limit", False),
+                (NO_ENTRYPOINT_TARGET, [], "COMPLETE", None, False),
+                (NOT_INDEXED_TARGET, ["--limit", "0"], "NOT_INDEXED", None, False),
+            ]
+            for fqn, options, status, reason, entrypoints in cases:
+                queried = run_cli(
+                    "trace-up", fqn, "--out", out, *options,
+                    *( ["--entrypoints"] if entrypoints else []), "--json",
+                )
+                self.assertEqual(0, queried.returncode, queried.stderr)
+                payload = json.loads(queried.stdout)
+                self.assertEqual(status, payload["status"], fqn)
+                self.assertEqual(reason, payload["truncation_reason"], fqn)
+                self.assertEqual([], payload["boundaries"], fqn)
+
+            entrypoint_cases = [
+                (TARGET, [], "COMPLETE", None),
+                (TARGET, ["--depth", "1"], "TRUNCATED", "depth"),
+                (TARGET, ["--limit", "0"], "TRUNCATED", "limit"),
+                (NO_ENTRYPOINT_TARGET, [], "COMPLETE", None),
+                (NOT_INDEXED_TARGET, ["--limit", "0"], "NOT_INDEXED", None),
+            ]
+            for fqn, options, status, reason in entrypoint_cases:
+                queried = run_cli(
+                    "trace-up", fqn, "--out", out, *options,
+                    "--entrypoints", "--json",
+                )
+                self.assertEqual(0, queried.returncode, queried.stderr)
+                payload = json.loads(queried.stdout)
+                self.assertEqual(status, payload["status"], fqn)
+                self.assertEqual(reason, payload["truncation_reason"], fqn)
+                self.assertEqual([], payload["boundaries"], fqn)
+
+    def test_plain_trace_depth_reason_wins_when_limit_also_truncates(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-trace-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-trace-out-") as out:
+            self._index(root, out)
+
+            queried = run_cli(
+                "trace-up", TARGET, "--out", out, "--depth", "1",
+                "--limit", "0", "--json",
+            )
+            self.assertEqual(0, queried.returncode, queried.stderr)
+            payload = json.loads(queried.stdout)
+            self.assertTrue(payload["truncated"])
+            self.assertEqual("TRUNCATED", payload["status"])
+            self.assertEqual("depth", payload["truncation_reason"])
+            self.assertEqual([], payload["boundaries"])
+
+    def test_entrypoints_depth_reason_wins_when_limit_also_truncates(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-trace-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-trace-out-") as out:
+            self._index(root, out)
+
+            connection = sqlite3.connect(os.path.join(out, "index.sqlite3"))
+            try:
+                file_id, owner_fqn, line = connection.execute(
+                    "SELECT file_id, owner_fqn, line FROM symbols WHERE fqn = ?",
+                    (SERVICE,),
+                ).fetchone()
+                connection.executemany(
+                    "INSERT INTO entrypoints(file_id, method_fqn, owner_fqn, kind, "
+                    "reason, line) VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (file_id, SERVICE, owner_fqn, "test-main", "test", line),
+                        (file_id, SERVICE, owner_fqn, "test-servlet", "test", line),
+                    ],
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            queried = run_cli(
+                "trace-up", TARGET, "--out", out, "--entrypoints", "--depth", "1",
+                "--limit", "1", "--json",
+            )
+            self.assertEqual(0, queried.returncode, queried.stderr)
+            payload = json.loads(queried.stdout)
+            self.assertTrue(payload["truncated"])
+            self.assertEqual("TRUNCATED", payload["status"])
+            self.assertEqual("depth", payload["truncation_reason"])
+            self.assertEqual([], payload["boundaries"])
 
     def test_entrypoints_emit_each_kind_for_same_reached_method(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-trace-repo-") as root, \
