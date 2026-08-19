@@ -90,6 +90,129 @@ def index_call_repository(root, out):
 
 
 class CallCliTests(unittest.TestCase):
+    def test_json_state_vocabulary_and_precedence(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-call-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-call-out-") as out:
+            index_call_repository(root, out)
+            write_file(
+                root,
+                "src/p/ReflectiveCaller.java",
+                "package p;\n"
+                "class ReflectiveCaller {\n"
+                "    void run(String name) {\n"
+                "        Class.forName(name).newInstance();\n"
+                "    }\n"
+                "}\n",
+            )
+            # Re-index after adding the reflective fixture.
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            callers = json.loads(run_cli(
+                "callers", "p.Child.run", "--out", out, "--json"
+            ).stdout)
+            callers_limited = json.loads(run_cli(
+                "callers", "p.Child.run", "--out", out, "--json",
+                "--limit", "1",
+            ).stdout)
+            callers_absent = json.loads(run_cli(
+                "callers", "p.Absent.run", "--out", out, "--json",
+                "--limit", "0",
+            ).stdout)
+            callees = json.loads(run_cli(
+                "callees", "p.ReflectiveCaller.run", "--out", out, "--json"
+            ).stdout)
+            callees_limited = json.loads(run_cli(
+                "callees", "p.ReflectiveCaller.run", "--out", out,
+                "--json", "--limit", "1",
+            ).stdout)
+            callees_absent = json.loads(run_cli(
+                "callees", "p.Absent.run", "--out", out, "--json",
+                "--limit", "0",
+            ).stdout)
+
+            self.assertEqual("COMPLETE", callers["status"])
+            self.assertIsNone(callers["truncation_reason"])
+            self.assertEqual([], callers["boundaries"])
+            self.assertEqual("TRUNCATED", callers_limited["status"])
+            self.assertEqual("limit", callers_limited["truncation_reason"])
+            self.assertEqual("NOT_INDEXED", callers_absent["status"])
+            self.assertIsNone(callers_absent["truncation_reason"])
+            self.assertEqual([], callers_absent["boundaries"])
+
+            self.assertEqual("STOPPED_AT_BOUNDARY", callees["status"])
+            self.assertIsNone(callees["truncation_reason"])
+            self.assertEqual(
+                [
+                    {
+                        "kind": "dynamic_dispatch",
+                        "reason": "reflective_dispatch",
+                        "name": "forName",
+                        "line": 4,
+                    },
+                    {
+                        "kind": "dynamic_dispatch",
+                        "reason": "reflective_dispatch",
+                        "name": "newInstance",
+                        "line": 4,
+                    },
+                ],
+                callees["boundaries"],
+            )
+            self.assertEqual("TRUNCATED", callees_limited["status"])
+            self.assertTrue(callees_limited["truncated"])
+            self.assertEqual("limit", callees_limited["truncation_reason"])
+            self.assertEqual(2, len(callees_limited["boundaries"]))
+            self.assertEqual("NOT_INDEXED", callees_absent["status"])
+            self.assertIsNone(callees_absent["truncation_reason"])
+            self.assertEqual([], callees_absent["boundaries"])
+
+    def test_callees_limit_keeps_boundaries_from_full_result_set(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-call-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-call-out-") as out:
+            index_call_repository(root, out)
+            write_file(
+                root,
+                "src/p/MixedReflectiveCaller.java",
+                "package p;\n"
+                "class MixedReflectiveCaller {\n"
+                "    void run(Dao dao, String name) {\n"
+                "        dao.save();\n"
+                "        Class.forName(name).newInstance();\n"
+                "    }\n"
+                "}\n",
+            )
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            result = run_cli(
+                "callees", "p.MixedReflectiveCaller.run", "--out", out,
+                "--json", "--limit", "1",
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["truncated"])
+            self.assertEqual("TRUNCATED", payload["status"])
+            self.assertEqual("limit", payload["truncation_reason"])
+            self.assertEqual(
+                [
+                    {
+                        "kind": "dynamic_dispatch",
+                        "reason": "reflective_dispatch",
+                        "name": "forName",
+                        "line": 5,
+                    },
+                    {
+                        "kind": "dynamic_dispatch",
+                        "reason": "reflective_dispatch",
+                        "name": "newInstance",
+                        "line": 5,
+                    },
+                ],
+                payload["boundaries"],
+            )
+
     def test_callers_human_output_includes_rows_and_expanded_count(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-call-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-call-out-") as out:
@@ -238,6 +361,9 @@ class CallCliTests(unittest.TestCase):
                     "direct": 0,
                     "expanded": 0,
                     "results": [],
+                    "status": "NOT_INDEXED",
+                    "truncation_reason": None,
+                    "boundaries": [],
                 },
                 json.loads(callers_json.stdout),
             )
@@ -251,6 +377,9 @@ class CallCliTests(unittest.TestCase):
                     "resolved": 0,
                     "unresolved": 0,
                     "results": [],
+                    "status": "NOT_INDEXED",
+                    "truncation_reason": None,
+                    "boundaries": [],
                 },
                 json.loads(callees_json.stdout),
             )
@@ -276,7 +405,8 @@ class CallCliTests(unittest.TestCase):
             self.assertEqual(
                 [
                     "fqn", "direct_only", "confirmed_only", "count",
-                    "truncated", "direct", "expanded", "results",
+                    "truncated", "direct", "expanded", "results", "status",
+                    "truncation_reason", "boundaries",
                 ],
                 list(callers_payload.keys()),
             )
@@ -285,6 +415,9 @@ class CallCliTests(unittest.TestCase):
             self.assertFalse(callers_payload["confirmed_only"])
             self.assertEqual(2, callers_payload["count"])
             self.assertFalse(callers_payload["truncated"])
+            self.assertEqual("COMPLETE", callers_payload["status"])
+            self.assertIsNone(callers_payload["truncation_reason"])
+            self.assertEqual([], callers_payload["boundaries"])
             self.assertEqual(1, callers_payload["direct"])
             self.assertEqual(1, callers_payload["expanded"])
             self.assertEqual(
@@ -314,6 +447,9 @@ class CallCliTests(unittest.TestCase):
             limited_payload = json.loads(limited.stdout)
             self.assertEqual(1, limited_payload["count"])
             self.assertTrue(limited_payload["truncated"])
+            self.assertEqual("TRUNCATED", limited_payload["status"])
+            self.assertEqual("limit", limited_payload["truncation_reason"])
+            self.assertEqual([], limited_payload["boundaries"])
             self.assertEqual(1, limited_payload["direct"])
             self.assertEqual(0, limited_payload["expanded"])
 
@@ -322,7 +458,8 @@ class CallCliTests(unittest.TestCase):
             self.assertEqual(
                 [
                     "fqn", "confirmed_only", "count", "truncated",
-                    "resolved", "unresolved", "results",
+                    "resolved", "unresolved", "results", "status",
+                    "truncation_reason", "boundaries",
                 ],
                 list(callees_payload.keys()),
             )
@@ -330,6 +467,9 @@ class CallCliTests(unittest.TestCase):
             self.assertFalse(callees_payload["confirmed_only"])
             self.assertEqual(3, callees_payload["count"])
             self.assertFalse(callees_payload["truncated"])
+            self.assertEqual("COMPLETE", callees_payload["status"])
+            self.assertIsNone(callees_payload["truncation_reason"])
+            self.assertEqual([], callees_payload["boundaries"])
             self.assertEqual(1, callees_payload["resolved"])
             self.assertEqual(2, callees_payload["unresolved"])
             self.assertEqual(

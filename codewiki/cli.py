@@ -11,7 +11,7 @@ from .query.calls import callees as query_callees
 from .query.calls import callers as query_callers
 from .query.sql import column_accesses as query_column_accesses
 from .query.sql import accesses as query_accesses
-from .query.symbols import QueryError, search_path
+from .query.symbols import QueryError, is_indexed, search_path
 from .query.trace import (
     callers_upward as query_callers_upward,
     entrypoints_among as query_entrypoints_among,
@@ -226,12 +226,22 @@ def _resolve_type(args):
 
 def _impls(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
-    results = subtypes(os.path.join(out, "index.sqlite3"), args.fqn)
+    db_path = os.path.join(out, "index.sqlite3")
+    results = subtypes(db_path, args.fqn)
     if args.direct:
         results = [item for item in results if item.distance == 1]
     truncated = args.limit is not None and len(results) > max(0, args.limit)
     if args.limit is not None:
         results = results[:max(0, args.limit)]
+    indexed = is_indexed(db_path, args.fqn)
+    # Reflective calls are visible only from the calling side; impls have no indexed edge to report.
+    boundaries = []
+    status = (
+        "NOT_INDEXED" if not indexed else
+        "TRUNCATED" if truncated else
+        "STOPPED_AT_BOUNDARY" if boundaries else
+        "COMPLETE"
+    )
     if args.json:
         print(json.dumps({
             "fqn": args.fqn,
@@ -239,6 +249,9 @@ def _impls(args):
             "count": len(results),
             "truncated": truncated,
             "results": [item.as_dict() for item in results],
+            "status": status,
+            "truncation_reason": "limit" if truncated else None,
+            "boundaries": boundaries,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0
     for item in results:
@@ -253,9 +266,8 @@ def _impls(args):
 
 def _callers(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
-    results = query_callers(
-        os.path.join(out, "index.sqlite3"), args.fqn
-    )
+    db_path = os.path.join(out, "index.sqlite3")
+    results = query_callers(db_path, args.fqn)
     if args.confirmed:
         results = [item for item in results if item.confidence == "CONFIRMED"]
     if args.direct:
@@ -263,6 +275,15 @@ def _callers(args):
     truncated = args.limit is not None and len(results) > max(0, args.limit)
     if args.limit is not None:
         results = results[:max(0, args.limit)]
+    indexed = is_indexed(db_path, args.fqn)
+    # Reflective calls are visible only from the calling side; callers have no indexed edge to report.
+    boundaries = []
+    status = (
+        "NOT_INDEXED" if not indexed else
+        "TRUNCATED" if truncated else
+        "STOPPED_AT_BOUNDARY" if boundaries else
+        "COMPLETE"
+    )
     direct = sum(item.via_fqn is None for item in results)
     expanded = len(results) - direct
     if args.json:
@@ -275,6 +296,9 @@ def _callers(args):
             "direct": direct,
             "expanded": expanded,
             "results": [item.as_dict() for item in results],
+            "status": status,
+            "truncation_reason": "limit" if truncated else None,
+            "boundaries": boundaries,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0
     for item in results:
@@ -531,14 +555,30 @@ def _sample(args):
 
 def _callees(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
-    results = query_callees(
-        os.path.join(out, "index.sqlite3"), args.fqn
-    )
+    db_path = os.path.join(out, "index.sqlite3")
+    results = query_callees(db_path, args.fqn)
     if args.confirmed:
         results = [item for item in results if item.confidence == "CONFIRMED"]
+    boundaries = [
+        {
+            "kind": "dynamic_dispatch",
+            "reason": item.reason,
+            "name": item.name,
+            "line": item.line,
+        }
+        for item in results
+        if item.reason == "reflective_dispatch"
+    ]
     truncated = args.limit is not None and len(results) > max(0, args.limit)
     if args.limit is not None:
         results = results[:max(0, args.limit)]
+    indexed = is_indexed(db_path, args.fqn)
+    status = (
+        "NOT_INDEXED" if not indexed else
+        "TRUNCATED" if truncated else
+        "STOPPED_AT_BOUNDARY" if boundaries else
+        "COMPLETE"
+    )
     resolved = sum(item.target_fqn is not None for item in results)
     unresolved = len(results) - resolved
     if args.json:
@@ -550,6 +590,9 @@ def _callees(args):
             "resolved": resolved,
             "unresolved": unresolved,
             "results": [item.as_dict() for item in results],
+            "status": status,
+            "truncation_reason": "limit" if truncated else None,
+            "boundaries": boundaries,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0
     for item in results:

@@ -196,6 +196,9 @@ class JavaTypeHierarchyIntegrationTests(unittest.TestCase):
                         "distance": 1,
                         "relation": "extends",
                     }],
+                    "status": "COMPLETE",
+                    "truncation_reason": None,
+                    "boundaries": [],
                 },
                 json.loads(queried.stdout),
             )
@@ -407,6 +410,9 @@ class JavaTypeHierarchyIntegrationTests(unittest.TestCase):
                     "count": 0,
                     "truncated": False,
                     "results": [],
+                    "status": "NOT_INDEXED",
+                    "truncation_reason": None,
+                    "boundaries": [],
                 },
                 json.loads(result.stdout),
             )
