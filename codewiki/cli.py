@@ -8,7 +8,7 @@ from dataclasses import asdict
 
 from .index import pipeline
 from .query.calls import callees as query_callees
-from .query.calls import callers as query_callers
+from .query.calls import callers_bounded as query_callers_bounded
 from .query.sql import column_accesses as query_column_accesses
 from .query.sql import accesses as query_accesses
 from .query.symbols import QueryError, is_indexed, search_path
@@ -17,7 +17,7 @@ from .query.trace import (
     entrypoints_among as query_entrypoints_among,
     path_to as trace_path_to,
 )
-from .query.types import TypeQueryError, resolve_type_path, subtypes
+from .query.types import TypeQueryError, resolve_type_path, subtypes_bounded
 
 
 def _nonnegative(value):
@@ -58,11 +58,13 @@ def _parser():
     impls.add_argument("--json", action="store_true")
     impls.add_argument("--direct", action="store_true")
     impls.add_argument("--limit", type=_nonnegative, default=None)
+    impls.add_argument("--implementation-limit", type=_nonnegative, default=None)
     callers = commands.add_parser("callers")
     callers.add_argument("fqn")
     callers.add_argument("--out", default=None)
     callers.add_argument("--json", action="store_true")
     callers.add_argument("--limit", type=_nonnegative, default=None)
+    callers.add_argument("--dispatch-hops", type=_nonnegative, default=None)
     callers.add_argument("--confirmed", action="store_true")
     callers.add_argument("--direct", action="store_true")
     trace_up = commands.add_parser("trace-up")
@@ -227,12 +229,15 @@ def _resolve_type(args):
 def _impls(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     db_path = os.path.join(out, "index.sqlite3")
-    results = subtypes(db_path, args.fqn)
+    results, search_truncated = subtypes_bounded(
+        db_path, args.fqn, max_candidates=args.implementation_limit
+    )
     if args.direct:
         results = [item for item in results if item.distance == 1]
-    truncated = args.limit is not None and len(results) > max(0, args.limit)
+    limit_truncated = args.limit is not None and len(results) > max(0, args.limit)
     if args.limit is not None:
         results = results[:max(0, args.limit)]
+    truncated = search_truncated or limit_truncated
     indexed = is_indexed(db_path, args.fqn)
     # Reflective calls are visible only from the calling side; impls have no indexed edge to report.
     boundaries = []
@@ -250,7 +255,11 @@ def _impls(args):
             "truncated": truncated,
             "results": [item.as_dict() for item in results],
             "status": status,
-            "truncation_reason": "limit" if truncated else None,
+            "truncation_reason": (
+                "candidates" if search_truncated else
+                "limit" if limit_truncated else
+                None
+            ),
             "boundaries": boundaries,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0
@@ -258,7 +267,7 @@ def _impls(args):
         print("%s %s %d %s %s:%d" % (
             item.fqn, item.kind, item.distance, item.relation, item.path, item.line,
         ))
-    if truncated:
+    if limit_truncated:
         print("truncated: limit reached")
     print("%d subtypes" % len(results))
     return 0
@@ -267,14 +276,17 @@ def _impls(args):
 def _callers(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     db_path = os.path.join(out, "index.sqlite3")
-    results = query_callers(db_path, args.fqn)
+    results, search_truncated = query_callers_bounded(
+        db_path, args.fqn, max_dispatch_hops=args.dispatch_hops
+    )
     if args.confirmed:
         results = [item for item in results if item.confidence == "CONFIRMED"]
     if args.direct:
         results = [item for item in results if item.via_fqn is None]
-    truncated = args.limit is not None and len(results) > max(0, args.limit)
+    limit_truncated = args.limit is not None and len(results) > max(0, args.limit)
     if args.limit is not None:
         results = results[:max(0, args.limit)]
+    truncated = search_truncated or limit_truncated
     indexed = is_indexed(db_path, args.fqn)
     # Reflective calls are visible only from the calling side; callers have no indexed edge to report.
     boundaries = []
@@ -297,7 +309,11 @@ def _callers(args):
             "expanded": expanded,
             "results": [item.as_dict() for item in results],
             "status": status,
-            "truncation_reason": "limit" if truncated else None,
+            "truncation_reason": (
+                "dispatch_hops" if search_truncated else
+                "limit" if limit_truncated else
+                None
+            ),
             "boundaries": boundaries,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0
@@ -306,7 +322,7 @@ def _callers(args):
         print("%s  %s:%d  %s%s" % (
             item.caller_fqn, item.path, item.line, item.confidence, via,
         ))
-    if truncated:
+    if limit_truncated:
         print("truncated: limit reached")
     print("%d callers (%d direct, %d via an overridden method)" % (
         len(results), direct, expanded,

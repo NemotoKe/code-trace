@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 
+from codewiki.cli import _parser
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -89,7 +91,45 @@ def index_call_repository(root, out):
         raise AssertionError(result.stderr)
 
 
+def write_bounded_call_repository(root):
+    write_file(
+        root,
+        "src/p/Base.java",
+        "package p;\n"
+        "interface Base { void run(); }\n",
+    )
+    write_file(
+        root,
+        "src/p/Mid.java",
+        "package p;\n"
+        "interface Mid extends Base { void run(); }\n",
+    )
+    write_file(
+        root,
+        "src/p/Leaf.java",
+        "package p;\n"
+        "class Leaf implements Mid { public void run() {} }\n",
+    )
+    write_file(
+        root,
+        "src/p/Callers.java",
+        "package p;\n"
+        "class Callers {\n"
+        "    void leaf(Leaf value) { value.run(); }\n"
+        "    void mid(Mid value) { value.run(); }\n"
+        "    void base(Base value) { value.run(); }\n"
+        "}\n",
+    )
+
+
 class CallCliTests(unittest.TestCase):
+    def test_search_budget_flags_default_to_unbounded(self):
+        callers = _parser().parse_args(["callers", "p.Child.run"])
+        impls = _parser().parse_args(["impls", "demo.Base"])
+
+        self.assertIsNone(callers.dispatch_hops)
+        self.assertIsNone(impls.implementation_limit)
+
     def test_json_state_vocabulary_and_precedence(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-call-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-call-out-") as out:
@@ -166,6 +206,67 @@ class CallCliTests(unittest.TestCase):
             self.assertEqual("NOT_INDEXED", callees_absent["status"])
             self.assertIsNone(callees_absent["truncation_reason"])
             self.assertEqual([], callees_absent["boundaries"])
+
+    def test_dispatch_hops_bounds_search_and_precedes_display_limit(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-call-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-call-out-") as out:
+            write_bounded_call_repository(root)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            unbounded = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--json"
+            ).stdout)
+            one_hop_result = run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--json",
+                "--dispatch-hops", "1",
+            )
+            one_hop = json.loads(one_hop_result.stdout)
+            boundary = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--json",
+                "--dispatch-hops", "2",
+            ).stdout)
+            zero = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--json",
+                "--dispatch-hops", "0",
+            ).stdout)
+            both = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--json",
+                "--dispatch-hops", "1", "--limit", "1",
+            ).stdout)
+            human = run_cli(
+                "callers", "p.Leaf.run", "--out", out,
+                "--dispatch-hops", "1",
+            )
+
+            self.assertEqual(
+                ["p.Callers.leaf", "p.Callers.base", "p.Callers.mid"],
+                [item["caller_fqn"] for item in unbounded["results"]],
+            )
+            self.assertTrue(one_hop_result.returncode == 0, one_hop_result.stderr)
+            self.assertTrue(one_hop["truncated"])
+            self.assertEqual("TRUNCATED", one_hop["status"])
+            self.assertEqual("dispatch_hops", one_hop["truncation_reason"])
+            self.assertEqual(
+                ["p.Callers.leaf", "p.Callers.mid"],
+                [item["caller_fqn"] for item in one_hop["results"]],
+            )
+            self.assertFalse(boundary["truncated"])
+            self.assertIsNone(boundary["truncation_reason"])
+            self.assertEqual(unbounded["results"], boundary["results"])
+            self.assertTrue(zero["truncated"])
+            self.assertEqual("dispatch_hops", zero["truncation_reason"])
+            self.assertEqual(["p.Callers.leaf"], [
+                item["caller_fqn"] for item in zero["results"]
+            ])
+            self.assertEqual(1, both["count"])
+            self.assertTrue(both["truncated"])
+            self.assertEqual("dispatch_hops", both["truncation_reason"])
+            self.assertNotIn("truncated: limit reached", human.stdout)
+            self.assertEqual(
+                "2 callers (1 direct, 1 via an overridden method)",
+                human.stdout.splitlines()[-1],
+            )
 
     def test_callees_limit_keeps_boundaries_from_full_result_set(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-call-repo-") as root, \
