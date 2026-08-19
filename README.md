@@ -51,12 +51,15 @@ Show the indexed subtype closure of a fully qualified type:
 ```text
 python3 -m codewiki impls com.acme.Base --out .codewiki
 python3 -m codewiki impls com.acme.Base --out .codewiki --direct --limit 10
-python3 -m codewiki impls com.acme.Base --out .codewiki --json
+python3 -m codewiki impls com.acme.Base --out .codewiki --json --profile normal
 ```
 
 Results are ordered by distance and FQN. `--direct` keeps only types that name
-the queried type directly, and `--limit` keeps the nearest results. JSON always
-has `fqn`, `direct`, `count`, `truncated`, and `results` keys; no-match exits 0.
+the queried type directly, and `--limit` keeps the nearest results.
+`--implementation-limit` bounds the candidate search. JSON always has `fqn`,
+`direct`, `count`, `truncated`, `results`, `status`, `truncation_reason`,
+`boundaries`, and `profile` keys; `truncation_reason` is `candidates`,
+`limit`, or `null`. No-match exits 0.
 
 Read callers and callees of a fully qualified method:
 
@@ -71,7 +74,26 @@ python3 -m codewiki callees com.acme.OrderService.cancel --out .codewiki --json 
 unresolved edges. `callees --confirmed` keeps only confirmed calls. Both
 commands apply `--limit` after filtering, report their direct/expanded or
 resolved/unresolved split, and return an empty result with status 0 when the
-method is not indexed.
+method is not indexed. JSON for `callers` always has `fqn`, `direct_only`,
+`confirmed_only`, `count`, `truncated`, `direct`, `expanded`, `results`,
+`status`, `truncation_reason`, `boundaries`, and `profile` keys;
+`truncation_reason` is `dispatch_hops`, `limit`, or `null`. JSON for `callees`
+always has `fqn`, `confirmed_only`, `count`, `truncated`, `resolved`,
+`unresolved`, `results`, `status`, `truncation_reason`, and `boundaries` keys;
+`truncation_reason` is `limit` or `null`.
+
+The status values are `COMPLETE`, `TRUNCATED`, `STOPPED_AT_BOUNDARY`, and
+`NOT_INDEXED`. `COMPLETE` means the search finished, including when it found
+nothing. `TRUNCATED` means a display limit or search budget cut the result.
+`STOPPED_AT_BOUNDARY` means the search found an indexed boundary. `NOT_INDEXED`
+means the queried symbol is not in the index at all. The precedence is
+`NOT_INDEXED`, then `TRUNCATED`, then `STOPPED_AT_BOUNDARY`, then `COMPLETE`.
+
+`boundaries` is non-empty only for `callees`. A reflective call such as
+`Class.forName(name).newInstance()` is recorded at the call site, but the index
+holds no edge into whatever it reaches, so the boundary is visible looking down
+and invisible looking up. The other three commands emit an empty `boundaries`
+list.
 
 Walk the call graph upward from a method, optionally keeping only the entry
 points it reaches:
@@ -85,8 +107,23 @@ python3 -m codewiki trace-up com.acme.OrderRepository.updateStatus --out .codewi
 One shortest path is kept per reachable method, so a heavily re-convergent call
 graph stays finite. `--entrypoints` reports each reaching entry point with its
 kind and the chain down to the queried method. `--depth` bounds the walk and
-defaults to 8; `truncated` says the bound was hit, which is not the same as
-having found nothing above.
+defaults to 8. JSON always has `fqn`, `depth`, `entrypoints_only`, `count`,
+`truncated`, `status`, `truncation_reason`, `boundaries`, `max_depth_reached`,
+`results`, and `profile` keys; `truncation_reason` is `depth`, `nodes`,
+`limit`, or `null`.
+
+For these commands, `--limit` is a display limit applied after the answer is
+computed. The search budgets are `--implementation-limit` for `impls`,
+`--dispatch-hops` for `callers`, and `--depth` for `trace-up`; they stop the
+search while it runs. If both kinds of limit apply, the search-budget reason is
+reported in `truncation_reason` rather than `limit`.
+`--profile normal|detailed` is available on `impls`, `callers`, and
+`trace-up`. `normal` sets `impls` to 10 candidates, `callers` to 2 dispatch
+hops, and `trace-up` to depth 4.
+`detailed` is the default behaviour, with no implementation or dispatch budget
+and the ordinary trace depth of 8. Omitting `--profile` behaves like `detailed`
+but reports `"profile": null`. An explicitly supplied budget flag overrides
+the corresponding profile value.
 
 Find the methods that read or write a table or a column:
 
