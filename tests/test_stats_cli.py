@@ -151,6 +151,7 @@ class StatsCliIntegrationTests(unittest.TestCase):
                     "no_declaration": 0,
                     "type_unresolved": 0,
                     "receiver_not_internal": 0,
+                    "reflective_dispatch": 0,
                     "single_member": 0,
                     "overloaded": 0,
                     "member_absent": 0,
@@ -439,7 +440,7 @@ class StatsCliIntegrationTests(unittest.TestCase):
             queried = run_cli("stats", "--out", out)
             self.assertEqual(0, queried.returncode, queried.stderr)
             lines = queried.stdout.splitlines()
-            self.assertEqual(125, len(lines))
+            self.assertEqual(126, len(lines))
             self.assertEqual(len(lines), len(set(lines)))
             self.assertIn("files.java: 0", lines)
             self.assertIn("calls.by_form_confidence.receiver|CONFIRMED: 0", lines)
