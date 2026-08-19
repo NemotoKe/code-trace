@@ -13,7 +13,7 @@ from .query.sql import column_accesses as query_column_accesses
 from .query.sql import accesses as query_accesses
 from .query.symbols import QueryError, is_indexed, search_path
 from .query.trace import (
-    callers_upward as query_callers_upward,
+    callers_upward_bounded as query_callers_upward_bounded,
     entrypoints_among as query_entrypoints_among,
     path_to as trace_path_to,
 )
@@ -317,9 +317,15 @@ def _callers(args):
 def _trace_up(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     db_path = os.path.join(out, "index.sqlite3")
-    nodes, walker_truncated = query_callers_upward(
+    nodes, walker_reason = query_callers_upward_bounded(
         db_path, args.fqn, max_depth=args.depth
     )
+    indexed = is_indexed(db_path, args.fqn)
+
+    # trace-up walks upward, and a reflective call leaves no edge into its
+    # target, so a caller that reaches this method reflectively is not present
+    # in the index at all and cannot be reported.
+    boundaries = []
 
     if args.entrypoints:
         kinds_by_fqn = query_entrypoints_among(
@@ -348,7 +354,16 @@ def _trace_up(args):
             result["chain"] = chain
             result_records.append((node, kind, chain_nodes, result))
 
-        truncated = walker_truncated or limit_truncated
+        truncated = walker_reason is not None or limit_truncated
+        truncation_reason = walker_reason or ("limit" if limit_truncated else None)
+        if not indexed:
+            status = "NOT_INDEXED"
+        elif truncated:
+            status = "TRUNCATED"
+        elif boundaries:
+            status = "STOPPED_AT_BOUNDARY"
+        else:
+            status = "COMPLETE"
         max_depth_reached = max(
             (node.depth for node, _kind, _chain, _result in result_records),
             default=0,
@@ -360,6 +375,9 @@ def _trace_up(args):
                 "entrypoints_only": True,
                 "count": len(result_records),
                 "truncated": truncated,
+                "status": status,
+                "truncation_reason": truncation_reason,
+                "boundaries": boundaries,
                 "max_depth_reached": max_depth_reached,
                 "results": [result for _node, _kind, _chain, result in result_records],
             }, ensure_ascii=False, separators=(",", ":")))
@@ -388,7 +406,16 @@ def _trace_up(args):
     limit_truncated = args.limit is not None and len(nodes) > max(0, args.limit)
     if args.limit is not None:
         nodes = nodes[:max(0, args.limit)]
-    truncated = walker_truncated or limit_truncated
+    truncated = walker_reason is not None or limit_truncated
+    truncation_reason = walker_reason or ("limit" if limit_truncated else None)
+    if not indexed:
+        status = "NOT_INDEXED"
+    elif truncated:
+        status = "TRUNCATED"
+    elif boundaries:
+        status = "STOPPED_AT_BOUNDARY"
+    else:
+        status = "COMPLETE"
     max_depth_reached = max((node.depth for node in nodes), default=0)
     if args.json:
         print(json.dumps({
@@ -397,6 +424,9 @@ def _trace_up(args):
             "entrypoints_only": False,
             "count": len(nodes),
             "truncated": truncated,
+            "status": status,
+            "truncation_reason": truncation_reason,
+            "boundaries": boundaries,
             "max_depth_reached": max_depth_reached,
             "results": [asdict(node) for node in nodes],
         }, ensure_ascii=False, separators=(",", ":")))
