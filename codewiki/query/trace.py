@@ -48,7 +48,17 @@ def callers_upward(path: str, fqn: str, max_depth: int = 8,
         next_frontier = []
         for current_fqn, current_depth in frontier:
             if current_depth >= max_depth:
-                truncated = True
+                try:
+                    boundary_callers = callers(path, current_fqn)
+                except sqlite3.DatabaseError as exc:
+                    raise TypeQueryError(
+                        "index database missing or stale; rerun index"
+                    ) from exc
+                if any(
+                    result.caller_fqn not in visited
+                    for result in boundary_callers
+                ):
+                    truncated = True
                 continue
 
             try:
