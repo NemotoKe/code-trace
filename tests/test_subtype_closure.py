@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import unittest
+from unittest import mock
 
 from tests.fixture import fixture_directory, write_fixture
 
@@ -33,6 +34,41 @@ class SubtypeClosureTests(unittest.TestCase):
 
         result = pipeline.run(self.root, os.path.join(self.root, "extra-index-out"), jobs=1)
         self.db_path = result.db_path
+
+    def _add_chain(self, package, names):
+        for index, name in enumerate(names):
+            parent = names[index - 1] if index else None
+            declaration = "interface %s" % name
+            if index == len(names) - 1:
+                declaration = "class %s" % name
+            extends = " extends %s" % parent if parent else ""
+            self._add_java(
+                "src/%s/%s.java" % (package, name),
+                "package %s;\npublic %s%s {}\n" % (
+                    package, declaration, extends
+                ),
+            )
+
+    def _reindexed_chain(self, package="bounded", count=5):
+        names = ["Base"] + ["Type%d" % index for index in range(1, count + 1)]
+        self._add_chain(package, names)
+        self._reindex()
+        return "%s.Base" % package
+
+    class _CountingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.execute_count = 0
+            self.executed_targets = []
+
+        def execute(self, *args, **kwargs):
+            self.execute_count += 1
+            if len(args) > 1 and args[1]:
+                self.executed_targets.append(args[1][0])
+            return self.connection.execute(*args, **kwargs)
+
+        def close(self):
+            self.connection.close()
 
     def _insert_cycle_rows(self):
         connection = sqlite3.connect(self.db_path)
@@ -152,6 +188,77 @@ class SubtypeClosureTests(unittest.TestCase):
             },
             result[0].as_dict(),
         )
+
+    def test_bounded_subtypes_returns_prefix_and_reports_more_results(self):
+        from codewiki.query.types import subtypes, subtypes_bounded
+
+        root = self._reindexed_chain()
+        unbounded = subtypes(self.db_path, root)
+
+        result, truncated = subtypes_bounded(self.db_path, root, max_candidates=3)
+
+        self.assertEqual(unbounded[:3], result)
+        self.assertTrue(truncated)
+
+    def test_bounded_subtypes_exact_and_unbounded_budgets_match(self):
+        from codewiki.query.types import subtypes, subtypes_bounded
+
+        root = self._reindexed_chain()
+        expected = subtypes(self.db_path, root)
+
+        exact, exact_truncated = subtypes_bounded(
+            self.db_path, root, max_candidates=len(expected)
+        )
+        above, above_truncated = subtypes_bounded(
+            self.db_path, root, max_candidates=len(expected) + 1
+        )
+        unbounded, unbounded_truncated = subtypes_bounded(self.db_path, root)
+
+        self.assertEqual(expected, exact)
+        self.assertFalse(exact_truncated)
+        self.assertEqual(expected, above)
+        self.assertFalse(above_truncated)
+        self.assertEqual(expected, unbounded)
+        self.assertFalse(unbounded_truncated)
+
+    def test_bounded_subtypes_zero_and_negative_budgets(self):
+        from codewiki.query.types import subtypes_bounded
+
+        root = self._reindexed_chain()
+
+        for budget in (0, -1):
+            result, truncated = subtypes_bounded(
+                self.db_path, root, max_candidates=budget
+            )
+            self.assertEqual([], result)
+            self.assertTrue(truncated)
+
+    def test_bounded_subtypes_empty_closure_is_not_truncated(self):
+        from codewiki.query.types import subtypes_bounded
+
+        for budget in (None, 0, -1, 1):
+            result, truncated = subtypes_bounded(
+                self.db_path, "com.acme.OrderRepository", max_candidates=budget
+            )
+            self.assertEqual([], result)
+            self.assertFalse(truncated)
+
+    def test_bounded_subtypes_does_not_query_below_budget_level(self):
+        from codewiki.query import types
+
+        root = self._reindexed_chain(package="early", count=3)
+        connection = sqlite3.connect(self.db_path)
+        counting = self._CountingConnection(connection)
+
+        with mock.patch.object(types, "_readonly", return_value=counting):
+            result, truncated = types.subtypes_bounded(
+                self.db_path, root, max_candidates=1
+            )
+
+        self.assertEqual(["early.Type1"], [item.fqn for item in result])
+        self.assertTrue(truncated)
+        self.assertEqual(2, counting.execute_count)
+        self.assertEqual([root, "early.Type1"], counting.executed_targets)
 
     def test_unknown_type_and_leaf_have_empty_closures(self):
         from codewiki.query.types import subtypes
