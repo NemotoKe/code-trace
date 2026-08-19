@@ -46,6 +46,35 @@ def write_hierarchy(root):
 
 
 class ImplsCliTests(unittest.TestCase):
+    def test_json_status_distinguishes_complete_truncated_and_not_indexed(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-impls-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-impls-out-") as out:
+            write_hierarchy(root)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            complete = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--json"
+            ).stdout)
+            truncated = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--json", "--limit", "0"
+            ).stdout)
+            absent = json.loads(run_cli(
+                "impls", "demo.Absent", "--out", out, "--json", "--limit", "0"
+            ).stdout)
+
+            self.assertEqual("COMPLETE", complete["status"])
+            self.assertIsNone(complete["truncation_reason"])
+            self.assertEqual([], complete["boundaries"])
+            self.assertEqual("TRUNCATED", truncated["status"])
+            self.assertTrue(truncated["truncated"])
+            self.assertEqual("limit", truncated["truncation_reason"])
+            self.assertEqual([], truncated["boundaries"])
+            self.assertEqual("NOT_INDEXED", absent["status"])
+            self.assertFalse(absent["truncated"])
+            self.assertIsNone(absent["truncation_reason"])
+            self.assertEqual([], absent["boundaries"])
+
     def test_human_output_lists_ordered_subtypes_and_count(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-impls-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-impls-out-") as out:
@@ -121,13 +150,19 @@ class ImplsCliTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             payload = json.loads(result.stdout)
             self.assertEqual(
-                ["fqn", "direct", "count", "truncated", "results"],
+                [
+                    "fqn", "direct", "count", "truncated", "results", "status",
+                    "truncation_reason", "boundaries",
+                ],
                 list(payload.keys()),
             )
             self.assertEqual("demo.Base", payload["fqn"])
             self.assertFalse(payload["direct"])
             self.assertEqual(1, payload["count"])
             self.assertTrue(payload["truncated"])
+            self.assertEqual("TRUNCATED", payload["status"])
+            self.assertEqual("limit", payload["truncation_reason"])
+            self.assertEqual([], payload["boundaries"])
             self.assertEqual(
                 {
                     "fqn": "demo.Mid",
@@ -163,6 +198,9 @@ class ImplsCliTests(unittest.TestCase):
                     "count": 0,
                     "truncated": False,
                     "results": [],
+                    "status": "NOT_INDEXED",
+                    "truncation_reason": None,
+                    "boundaries": [],
                 },
                 json.loads(encoded.stdout),
             )
