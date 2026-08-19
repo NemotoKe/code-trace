@@ -199,6 +199,7 @@ class JavaTypeHierarchyIntegrationTests(unittest.TestCase):
                     "status": "COMPLETE",
                     "truncation_reason": None,
                     "boundaries": [],
+                    "profile": None,
                 },
                 json.loads(queried.stdout),
             )
@@ -413,6 +414,7 @@ class JavaTypeHierarchyIntegrationTests(unittest.TestCase):
                     "status": "NOT_INDEXED",
                     "truncation_reason": None,
                     "boundaries": [],
+                    "profile": None,
                 },
                 json.loads(result.stdout),
             )

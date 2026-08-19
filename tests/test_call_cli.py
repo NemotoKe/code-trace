@@ -122,6 +122,44 @@ def write_bounded_call_repository(root):
     )
 
 
+def write_profile_bounded_call_repository(root):
+    write_file(
+        root,
+        "src/p/Base0.java",
+        "package p;\n"
+        "interface Base0 { void run(); }\n",
+    )
+    write_file(
+        root,
+        "src/p/Base1.java",
+        "package p;\n"
+        "interface Base1 extends Base0 { void run(); }\n",
+    )
+    write_file(
+        root,
+        "src/p/Base2.java",
+        "package p;\n"
+        "interface Base2 extends Base1 { void run(); }\n",
+    )
+    write_file(
+        root,
+        "src/p/Leaf.java",
+        "package p;\n"
+        "class Leaf implements Base2 { public void run() {} }\n",
+    )
+    write_file(
+        root,
+        "src/p/Callers.java",
+        "package p;\n"
+        "class Callers {\n"
+        "    void leaf(Leaf value) { value.run(); }\n"
+        "    void base2(Base2 value) { value.run(); }\n"
+        "    void base1(Base1 value) { value.run(); }\n"
+        "    void base0(Base0 value) { value.run(); }\n"
+        "}\n",
+    )
+
+
 class CallCliTests(unittest.TestCase):
     def test_search_budget_flags_default_to_unbounded(self):
         callers = _parser().parse_args(["callers", "p.Child.run"])
@@ -129,6 +167,77 @@ class CallCliTests(unittest.TestCase):
 
         self.assertIsNone(callers.dispatch_hops)
         self.assertIsNone(impls.implementation_limit)
+        self.assertIsNone(callers.profile)
+        self.assertIsNone(impls.profile)
+
+    def test_profile_controls_dispatch_hops_and_explicit_override(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-call-profile-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-call-profile-out-") as out:
+            write_profile_bounded_call_repository(root)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            default = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--json"
+            ).stdout)
+            detailed = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--profile", "detailed",
+                "--json"
+            ).stdout)
+            normal = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--profile", "normal",
+                "--json"
+            ).stdout)
+            normal_then_explicit = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--profile", "normal",
+                "--dispatch-hops", "3", "--json"
+            ).stdout)
+            explicit_then_normal = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--dispatch-hops", "3",
+                "--profile", "normal", "--json"
+            ).stdout)
+
+            self.assertEqual(4, default["count"])
+            self.assertFalse(default["truncated"])
+            self.assertIsNone(default["truncation_reason"])
+            self.assertIsNone(default["profile"])
+            self.assertEqual(default["results"], detailed["results"])
+            self.assertEqual("detailed", detailed["profile"])
+            self.assertEqual(3, normal["count"])
+            self.assertTrue(normal["truncated"])
+            self.assertEqual("dispatch_hops", normal["truncation_reason"])
+            self.assertEqual("normal", normal["profile"])
+            self.assertEqual(4, normal_then_explicit["count"])
+            self.assertFalse(normal_then_explicit["truncated"])
+            self.assertIsNone(normal_then_explicit["truncation_reason"])
+            self.assertEqual("normal", normal_then_explicit["profile"])
+            self.assertEqual(
+                normal_then_explicit["results"], explicit_then_normal["results"]
+            )
+
+    def test_normal_profile_does_not_truncate_a_small_call_graph(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-call-profile-small-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-call-profile-small-out-") as out:
+            write_bounded_call_repository(root)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            payload = json.loads(run_cli(
+                "callers", "p.Leaf.run", "--out", out, "--profile", "normal",
+                "--json"
+            ).stdout)
+
+            self.assertEqual("COMPLETE", payload["status"])
+            self.assertFalse(payload["truncated"])
+            self.assertIsNone(payload["truncation_reason"])
+
+    def test_invalid_profile_is_rejected_by_argparse(self):
+        result = run_cli(
+            "callers", "p.Child.run", "--profile", "cheap", "--json"
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("invalid choice", result.stderr)
 
     def test_json_state_vocabulary_and_precedence(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-call-repo-") as root, \
@@ -465,6 +574,7 @@ class CallCliTests(unittest.TestCase):
                     "status": "NOT_INDEXED",
                     "truncation_reason": None,
                     "boundaries": [],
+                    "profile": None,
                 },
                 json.loads(callers_json.stdout),
             )
@@ -507,7 +617,7 @@ class CallCliTests(unittest.TestCase):
                 [
                     "fqn", "direct_only", "confirmed_only", "count",
                     "truncated", "direct", "expanded", "results", "status",
-                    "truncation_reason", "boundaries",
+                    "truncation_reason", "boundaries", "profile",
                 ],
                 list(callers_payload.keys()),
             )
