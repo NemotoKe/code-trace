@@ -59,12 +59,18 @@ def _parser():
     impls.add_argument("--direct", action="store_true")
     impls.add_argument("--limit", type=_nonnegative, default=None)
     impls.add_argument("--implementation-limit", type=_nonnegative, default=None)
+    impls.add_argument(
+        "--profile", choices=("normal", "detailed"), default=None
+    )
     callers = commands.add_parser("callers")
     callers.add_argument("fqn")
     callers.add_argument("--out", default=None)
     callers.add_argument("--json", action="store_true")
     callers.add_argument("--limit", type=_nonnegative, default=None)
     callers.add_argument("--dispatch-hops", type=_nonnegative, default=None)
+    callers.add_argument(
+        "--profile", choices=("normal", "detailed"), default=None
+    )
     callers.add_argument("--confirmed", action="store_true")
     callers.add_argument("--direct", action="store_true")
     trace_up = commands.add_parser("trace-up")
@@ -72,7 +78,10 @@ def _parser():
     trace_up.add_argument("--out", default=None)
     trace_up.add_argument("--json", action="store_true")
     trace_up.add_argument("--limit", type=_nonnegative, default=None)
-    trace_up.add_argument("--depth", type=_nonnegative, default=8)
+    trace_up.add_argument("--depth", type=_nonnegative, default=None)
+    trace_up.add_argument(
+        "--profile", choices=("normal", "detailed"), default=None
+    )
     trace_up.add_argument("--entrypoints", action="store_true")
     table = commands.add_parser("table")
     table.add_argument("table")
@@ -229,8 +238,13 @@ def _resolve_type(args):
 def _impls(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     db_path = os.path.join(out, "index.sqlite3")
+    implementation_limit = (
+        args.implementation_limit
+        if args.implementation_limit is not None
+        else 10 if args.profile == "normal" else None
+    )
     results, search_truncated = subtypes_bounded(
-        db_path, args.fqn, max_candidates=args.implementation_limit
+        db_path, args.fqn, max_candidates=implementation_limit
     )
     if args.direct:
         results = [item for item in results if item.distance == 1]
@@ -261,6 +275,7 @@ def _impls(args):
                 None
             ),
             "boundaries": boundaries,
+            "profile": args.profile,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0
     for item in results:
@@ -276,8 +291,13 @@ def _impls(args):
 def _callers(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     db_path = os.path.join(out, "index.sqlite3")
+    dispatch_hops = (
+        args.dispatch_hops
+        if args.dispatch_hops is not None
+        else 2 if args.profile == "normal" else None
+    )
     results, search_truncated = query_callers_bounded(
-        db_path, args.fqn, max_dispatch_hops=args.dispatch_hops
+        db_path, args.fqn, max_dispatch_hops=dispatch_hops
     )
     if args.confirmed:
         results = [item for item in results if item.confidence == "CONFIRMED"]
@@ -315,6 +335,7 @@ def _callers(args):
                 None
             ),
             "boundaries": boundaries,
+            "profile": args.profile,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0
     for item in results:
@@ -333,8 +354,13 @@ def _callers(args):
 def _trace_up(args):
     out = os.path.abspath(args.out or os.path.join(os.getcwd(), ".codewiki"))
     db_path = os.path.join(out, "index.sqlite3")
+    depth = (
+        args.depth
+        if args.depth is not None
+        else 4 if args.profile == "normal" else 8
+    )
     nodes, walker_reason = query_callers_upward_bounded(
-        db_path, args.fqn, max_depth=args.depth
+        db_path, args.fqn, max_depth=depth
     )
     indexed = is_indexed(db_path, args.fqn)
 
@@ -387,7 +413,7 @@ def _trace_up(args):
         if args.json:
             print(json.dumps({
                 "fqn": args.fqn,
-                "depth": args.depth,
+                "depth": depth,
                 "entrypoints_only": True,
                 "count": len(result_records),
                 "truncated": truncated,
@@ -396,6 +422,7 @@ def _trace_up(args):
                 "boundaries": boundaries,
                 "max_depth_reached": max_depth_reached,
                 "results": [result for _node, _kind, _chain, result in result_records],
+                "profile": args.profile,
             }, ensure_ascii=False, separators=(",", ":")))
             return 0
         if not has_entrypoint_matches:
@@ -436,7 +463,7 @@ def _trace_up(args):
     if args.json:
         print(json.dumps({
             "fqn": args.fqn,
-            "depth": args.depth,
+            "depth": depth,
             "entrypoints_only": False,
             "count": len(nodes),
             "truncated": truncated,
@@ -445,6 +472,7 @@ def _trace_up(args):
             "boundaries": boundaries,
             "max_depth_reached": max_depth_reached,
             "results": [asdict(node) for node in nodes],
+            "profile": args.profile,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0
     for node in nodes:

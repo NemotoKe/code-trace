@@ -57,7 +57,80 @@ def write_five_subtype_hierarchy(root):
         ))
 
 
+def write_eleven_subtype_hierarchy(root):
+    write_file(root, "src/demo/Base.java", (
+        "package demo;\n"
+        "public interface Base {}\n"
+    ))
+    for number in range(1, 12):
+        write_file(root, "src/demo/Sub%d.java" % number, (
+            "package demo;\n"
+            "public class Sub%d implements Base {}\n" % number
+        ))
+
+
 class ImplsCliTests(unittest.TestCase):
+    def test_profile_controls_implementation_limit_and_explicit_override(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-impls-profile-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-impls-profile-out-") as out:
+            write_eleven_subtype_hierarchy(root)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            default = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--json"
+            ).stdout)
+            detailed = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--profile", "detailed",
+                "--json"
+            ).stdout)
+            normal = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--profile", "normal",
+                "--json"
+            ).stdout)
+            normal_then_explicit = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--profile", "normal",
+                "--implementation-limit", "12", "--json"
+            ).stdout)
+            explicit_then_normal = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out,
+                "--implementation-limit", "12", "--profile", "normal", "--json"
+            ).stdout)
+
+            self.assertEqual(11, default["count"])
+            self.assertFalse(default["truncated"])
+            self.assertIsNone(default["truncation_reason"])
+            self.assertIsNone(default["profile"])
+            self.assertEqual(default["results"], detailed["results"])
+            self.assertEqual("detailed", detailed["profile"])
+            self.assertEqual(10, normal["count"])
+            self.assertTrue(normal["truncated"])
+            self.assertEqual("candidates", normal["truncation_reason"])
+            self.assertEqual("normal", normal["profile"])
+            self.assertEqual(11, normal_then_explicit["count"])
+            self.assertFalse(normal_then_explicit["truncated"])
+            self.assertIsNone(normal_then_explicit["truncation_reason"])
+            self.assertEqual("normal", normal_then_explicit["profile"])
+            self.assertEqual(
+                normal_then_explicit["results"], explicit_then_normal["results"]
+            )
+
+    def test_normal_profile_does_not_truncate_a_small_subtype_graph(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-impls-profile-small-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-impls-profile-small-out-") as out:
+            write_hierarchy(root)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            payload = json.loads(run_cli(
+                "impls", "demo.Base", "--out", out, "--profile", "normal",
+                "--json"
+            ).stdout)
+
+            self.assertEqual("COMPLETE", payload["status"])
+            self.assertFalse(payload["truncated"])
+            self.assertIsNone(payload["truncation_reason"])
+
     def test_implementation_limit_bounds_search_and_precedes_display_limit(self):
         with tempfile.TemporaryDirectory(prefix="codewiki-impls-repo-") as root, \
                 tempfile.TemporaryDirectory(prefix="codewiki-impls-out-") as out:
@@ -220,7 +293,7 @@ class ImplsCliTests(unittest.TestCase):
             self.assertEqual(
                 [
                     "fqn", "direct", "count", "truncated", "results", "status",
-                    "truncation_reason", "boundaries",
+                    "truncation_reason", "boundaries", "profile",
                 ],
                 list(payload.keys()),
             )
@@ -269,6 +342,7 @@ class ImplsCliTests(unittest.TestCase):
                     "status": "NOT_INDEXED",
                     "truncation_reason": None,
                     "boundaries": [],
+                    "profile": None,
                 },
                 json.loads(encoded.stdout),
             )

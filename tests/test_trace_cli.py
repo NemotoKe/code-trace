@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+from codewiki.cli import _parser
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARGET = "status.StatusUpdateServiceWithAnExcessivelyLongName.updateStatus"
@@ -37,7 +39,103 @@ def write_file(root, relative_path, contents):
         stream.write(contents)
 
 
+def write_profile_trace_repository(root):
+    write_file(
+        root,
+        "src/p/Target.java",
+        "package p;\n"
+        "public class Target { public void run() {} }\n",
+    )
+    for number in range(1, 6):
+        target_type = "Target" if number == 1 else "C%d" % (number - 1)
+        target_method = "run" if number == 1 else "call"
+        write_file(
+            root,
+            "src/p/C%d.java" % number,
+            "package p;\n"
+            "public class C%d {\n"
+            "    public void call() {\n"
+            "        %s target = new %s();\n"
+            "        target.%s();\n"
+            "    }\n"
+            "}\n" % (number, target_type, target_type, target_method),
+        )
+
+
 class TraceCliIntegrationTests(unittest.TestCase):
+    def test_parser_keeps_omitted_depth_distinguishable_from_explicit_depth(self):
+        omitted = _parser().parse_args(["trace-up", "p.Target.run"])
+        explicit = _parser().parse_args([
+            "trace-up", "p.Target.run", "--depth", "8"
+        ])
+
+        self.assertIsNone(omitted.depth)
+        self.assertIsNone(omitted.profile)
+        self.assertEqual(8, explicit.depth)
+
+    def test_profile_controls_trace_depth_and_explicit_override(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-trace-profile-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-trace-profile-out-") as out:
+            write_profile_trace_repository(root)
+            indexed = run_cli("index", root, "--out", out, "--quiet")
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+
+            default = json.loads(run_cli(
+                "trace-up", "p.Target.run", "--out", out, "--json"
+            ).stdout)
+            detailed = json.loads(run_cli(
+                "trace-up", "p.Target.run", "--out", out,
+                "--profile", "detailed", "--json"
+            ).stdout)
+            normal = json.loads(run_cli(
+                "trace-up", "p.Target.run", "--out", out,
+                "--profile", "normal", "--json"
+            ).stdout)
+            normal_then_explicit = json.loads(run_cli(
+                "trace-up", "p.Target.run", "--out", out,
+                "--profile", "normal", "--depth", "12", "--json"
+            ).stdout)
+            explicit_then_normal = json.loads(run_cli(
+                "trace-up", "p.Target.run", "--out", out,
+                "--depth", "12", "--profile", "normal", "--json"
+            ).stdout)
+
+            self.assertEqual(8, default["depth"])
+            self.assertEqual(5, default["count"])
+            self.assertFalse(default["truncated"])
+            self.assertIsNone(default["truncation_reason"])
+            self.assertIsNone(default["profile"])
+            self.assertEqual(default["results"], detailed["results"])
+            self.assertEqual(8, detailed["depth"])
+            self.assertEqual("detailed", detailed["profile"])
+            self.assertEqual(4, normal["depth"])
+            self.assertEqual(4, normal["count"])
+            self.assertTrue(normal["truncated"])
+            self.assertEqual("depth", normal["truncation_reason"])
+            self.assertEqual("normal", normal["profile"])
+            self.assertEqual(12, normal_then_explicit["depth"])
+            self.assertEqual(5, normal_then_explicit["count"])
+            self.assertFalse(normal_then_explicit["truncated"])
+            self.assertIsNone(normal_then_explicit["truncation_reason"])
+            self.assertEqual("normal", normal_then_explicit["profile"])
+            self.assertEqual(
+                normal_then_explicit["results"], explicit_then_normal["results"]
+            )
+
+    def test_normal_profile_does_not_truncate_a_small_trace(self):
+        with tempfile.TemporaryDirectory(prefix="codewiki-trace-profile-small-repo-") as root, \
+                tempfile.TemporaryDirectory(prefix="codewiki-trace-profile-small-out-") as out:
+            self._index(root, out)
+
+            payload = json.loads(run_cli(
+                "trace-up", TARGET, "--out", out, "--profile", "normal",
+                "--json"
+            ).stdout)
+
+            self.assertEqual("COMPLETE", payload["status"])
+            self.assertFalse(payload["truncated"])
+            self.assertIsNone(payload["truncation_reason"])
+
     def _fixture(self, root, jaxrs=False, main=True):
         write_file(
             root,
@@ -142,12 +240,13 @@ class TraceCliIntegrationTests(unittest.TestCase):
                 [
                     "fqn", "depth", "entrypoints_only", "count", "truncated",
                     "status", "truncation_reason", "boundaries",
-                    "max_depth_reached", "results",
+                    "max_depth_reached", "results", "profile",
                 ],
                 list(payload.keys()),
             )
             self.assertEqual(TARGET, payload["fqn"])
             self.assertEqual(8, payload["depth"])
+            self.assertIsNone(payload["profile"])
             self.assertFalse(payload["entrypoints_only"])
             self.assertEqual(3, payload["count"])
             self.assertFalse(payload["truncated"])
@@ -253,7 +352,7 @@ class TraceCliIntegrationTests(unittest.TestCase):
                 [
                     "fqn", "depth", "entrypoints_only", "count", "truncated",
                     "status", "truncation_reason", "boundaries",
-                    "max_depth_reached", "results",
+                    "max_depth_reached", "results", "profile",
                 ],
                 list(payload.keys()),
             )
