@@ -21,6 +21,23 @@ codex exec resume <ID> --json -m gpt-5.6-luna -c sandbox_mode=workspace-write -
 **理由:** `codex exec resume` のオプション集合が `codex exec` と異なる。`--json` は共通だが
 `--sandbox` は resume 側に無い。
 
+**`-C` / `--cd` も無い。** worktree を分けて並行委譲していると、初回は
+`codex exec -C <worktree>` で投げられるのに、是正パスで同じ `-C` を付けると
+`error: unexpected argument '-C' found` で即死する。resume は**その worktree に
+`cd` してから**投げる。zsh なら `( cd <worktree> && cat <abs prompt> | codex exec resume ... )`。
+
+```bash
+# 動かない — resume に -C は無い
+codex exec resume <ID> -C /path/to/wt-x --json -m gpt-5.6-luna -
+
+# 動く
+( cd /path/to/wt-x && cat /abs/fix.md | codex exec resume <ID> --json -m gpt-5.6-luna \
+    -c model_reasoning_effort=xhigh -c sandbox_mode=workspace-write - )
+```
+
+worktree のルートは trusted 扱いなので、上の 24 行目の「repo ルートから起動する」制約とは
+矛盾しない。禁じられているのは **git working tree の外**（scratchpad 直下など）から投げること。
+
 **同じ理由で踏むもう 1 つ:** `codex` は**リポジトリルートから起動する**。scratchpad に `cd`
 してからパイプで渡すと `Not inside a trusted directory and --skip-git-repo-check was not
 specified.` で即終了する。プロンプトファイルは絶対パスで `cat` する。
